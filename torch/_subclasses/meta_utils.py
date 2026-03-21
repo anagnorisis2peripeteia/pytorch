@@ -881,6 +881,8 @@ class MetaConverter(Generic[_TensorT]):
         self.tensor_memo: weakref.WeakValueDictionary[MetaTensorId, _TensorT] = (
             weakref.WeakValueDictionary()
         )
+        # Lock to protect tensor_memo from concurrent access
+        self._tensor_memo_lock = threading.RLock()
         self.hit = 0
         self.miss = 0
         self.del_hook = None
@@ -896,16 +898,19 @@ class MetaConverter(Generic[_TensorT]):
         return self.hit > 0 and self.miss == 0
 
     def get_tensor_memo(self, t: MetaTensorDesc[Any]) -> torch.Tensor | None:
-        return self.tensor_memo.get(t.id, None)
+        with self._tensor_memo_lock:
+            return self.tensor_memo.get(t.id, None)
 
     def _checked_get_tensor_memo(self, t: MetaTensorDesc[Any]) -> _TensorT:
-        r = self.tensor_memo.get(t.id, None)
-        if r is None:
-            raise AssertionError(f"Tensor memo for id {t.id} is None")
-        return r
+        with self._tensor_memo_lock:
+            r = self.tensor_memo.get(t.id, None)
+            if r is None:
+                raise AssertionError(f"Tensor memo for id {t.id} is None")
+            return r
 
     def set_tensor_memo(self, t: MetaTensorDesc[Any], v: _TensorT) -> None:
-        self.tensor_memo[t.id] = v
+        with self._tensor_memo_lock:
+            self.tensor_memo[t.id] = v
 
     def get_storage_memo(self, s: MetaStorageDesc) -> torch.UntypedStorage | None:
         return self.storage_memo.get(s.id, None)
@@ -1048,9 +1053,10 @@ class MetaConverter(Generic[_TensorT]):
             from torch._dynamo.source import ConstantSource
 
             # TODO: make a dedicated UnknownSource for this?
-            source = ConstantSource(
-                f"__meta_utils_unknown_tensor{len(self.tensor_memo)}"
-            )
+            with self._tensor_memo_lock:
+                source = ConstantSource(
+                    f"__meta_utils_unknown_tensor{len(self.tensor_memo)}"
+                )
 
         msg = (
             " This indicates you set no_dispatch() before calling into this"

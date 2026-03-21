@@ -983,6 +983,13 @@ class Module:
                         param_applied,
                         requires_grad=param.requires_grad,
                     )
+                    # FakeTensors may be stored in the converter's tensor_memo
+                    # (WeakValueDictionary), which installs weakrefs that
+                    # swap_tensors does not allow.  Remove them before swapping.
+                    if isinstance(param, FakeTensor):
+                        converter = param.fake_mode.fake_tensor_converter
+                        converter.remove_from_tensor_memo(param)
+                        converter.remove_from_tensor_memo(param_applied)
                     torch.utils.swap_tensors(param, param_applied)
                 except Exception as e:
                     if param_grad is not None:
@@ -1012,6 +1019,10 @@ class Module:
                 if p_should_use_swap_tensors:
                     grad_applied.requires_grad_(param_grad.requires_grad)
                     try:
+                        if isinstance(param_grad, FakeTensor):
+                            converter = param_grad.fake_mode.fake_tensor_converter
+                            converter.remove_from_tensor_memo(param_grad)
+                            converter.remove_from_tensor_memo(grad_applied)
                         torch.utils.swap_tensors(param_grad, grad_applied)
                     except Exception as e:
                         raise RuntimeError(
@@ -2412,6 +2423,8 @@ class Module:
         assign_to_params_buffers = local_metadata.get("assign_to_params_buffers", False)
         use_swap_tensors = torch.__future__.get_swap_module_params_on_conversion()
 
+        from torch._subclasses.fake_tensor import FakeTensor
+
         for name, param in local_state.items():
             key = prefix + name
             if key in state_dict:
@@ -2479,6 +2492,13 @@ class Module:
                                     )
                                 else:
                                     new_input_param.requires_grad_(param.requires_grad)
+                            # FakeTensors may be stored in the converter's tensor_memo
+                            # (WeakValueDictionary), which installs weakrefs that
+                            # swap_tensors does not allow.  Remove them before swapping.
+                            if isinstance(param, FakeTensor):
+                                converter = param.fake_mode.fake_tensor_converter
+                                converter.remove_from_tensor_memo(param)
+                                converter.remove_from_tensor_memo(new_input_param)
                             torch.utils.swap_tensors(param, new_input_param)
                             del new_input_param
                         elif assign_to_params_buffers:

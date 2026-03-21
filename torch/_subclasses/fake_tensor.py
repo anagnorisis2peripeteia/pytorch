@@ -373,11 +373,20 @@ class FakeTensorConverter:
         tid = self.meta_converter.describer.lookup_tensor.get(t)
         if tid is None:
             return None
-        return self.tensor_memo.get(tid)
+        with self.meta_converter._tensor_memo_lock:
+            return self.tensor_memo.get(tid)
 
     def set_tensor_memo(self, t: Tensor, v: FakeTensor) -> None:
         tid = self.meta_converter.describer.get_tensor_id(t)
-        self.meta_converter.tensor_memo[tid] = v
+        with self.meta_converter._tensor_memo_lock:
+            self.meta_converter.tensor_memo[tid] = v
+
+    def remove_from_tensor_memo(self, fake_tensor: Tensor) -> None:
+        """Remove a FakeTensor from tensor_memo, clearing its weakref."""
+        with self.meta_converter._tensor_memo_lock:
+            keys = [k for k, v in list(self.tensor_memo.items()) if v is fake_tensor]
+            for k in keys:
+                del self.tensor_memo[k]
 
     # You can have a real tensor that you need to convert into a fake tensor.
     # If you have a meta tensor already, call from_meta_and_device.

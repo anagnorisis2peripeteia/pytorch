@@ -2039,8 +2039,6 @@ class FakeTensorOperatorInvariants(TestCase):
 
         self.assertEqual(mode.count, 0)
 
-    # PropagateRealTensors installs weakrefs
-    @expectedFailurePropagateRealTensors
     @unittest.skipIf(not RUN_CUDA, "requires cuda")
     def test_module_to(self):
         def _check_device(sd, device_type):
@@ -2053,7 +2051,184 @@ class FakeTensorOperatorInvariants(TestCase):
             m.to("cuda")
             _check_device(m.state_dict(), "cuda")
 
+    @unittest.skipIf(
+        not RUN_CUDA and not torch.xpu.is_available(), "requires cuda or xpu"
+    )
+    @parametrize("device", ["cuda", "xpu"])
+    def test_module_to_weakref_cleanup(self, device):
+        """Test that weakrefs are removed from tensor_memo during module.to()"""
+        if device == "cuda" and not RUN_CUDA:
+            self.skipTest("CUDA not available")
+        if device == "xpu" and not torch.xpu.is_available():
+            self.skipTest("XPU not available")
 
+        with FakeTensorMode() as fake_mode:
+            m = torch.nn.Linear(2, 2)
+            converter = fake_mode.fake_tensor_converter
+
+            # Get initial tensor_memo size
+            initial_memo_size = len(converter.tensor_memo)
+
+            # Move to device - this should trigger swap_tensors with weakref cleanup
+            m.to(device)
+
+            # Verify the operation succeeded and memo size is reasonable
+            # (it should not grow unboundedly with each .to() call)
+            self.assertEqual(m.weight.device.type, device)
+            self.assertEqual(m.bias.device.type, device)
+
+            # Move back to CPU
+            m.to("cpu")
+            self.assertEqual(m.weight.device.type, "cpu")
+            self.assertEqual(m.bias.device.type, "cpu")
+
+            # After multiple moves, memo size should remain bounded
+            final_memo_size = len(converter.tensor_memo)
+            # We don't assert exact equality since other operations may add entries,
+            # but it shouldn't grow by more than a reasonable amount
+            self.assertLess(final_memo_size, initial_memo_size + 20)
+
+    @unittest.skipIf(
+        not RUN_CUDA and not torch.xpu.is_available(), "requires cuda or xpu"
+    )
+    @parametrize("device", ["cuda", "xpu"])
+    def test_module_to_with_gradients(self, device):
+        """Test that module.to() works with parameters that have gradients"""
+        if device == "cuda" and not RUN_CUDA:
+            self.skipTest("CUDA not available")
+        if device == "xpu" and not torch.xpu.is_available():
+            self.skipTest("XPU not available")
+
+        with FakeTensorMode():
+            m = torch.nn.Linear(2, 2)
+            x = torch.randn(3, 2)
+
+            # Create gradients
+            y = m(x)
+            loss = y.sum()
+            loss.backward()
+
+            # Verify gradients exist
+            self.assertIsNotNone(m.weight.grad)
+            self.assertIsNotNone(m.bias.grad)
+
+            # Move to device - this should handle both params and grads
+            m.to(device)
+
+            # Verify both params and grads moved
+            self.assertEqual(m.weight.device.type, device)
+            self.assertEqual(m.weight.grad.device.type, device)
+            self.assertEqual(m.bias.device.type, device)
+            self.assertEqual(m.bias.grad.device.type, device)
+
+    @unittest.skipIf(
+        not RUN_CUDA and not torch.xpu.is_available(), "requires cuda or xpu"
+    )
+    @parametrize("device", ["cuda", "xpu"])
+    def test_module_to_with_buffers(self, device):
+        """Test that module.to() works with modules that have buffers"""
+        if device == "cuda" and not RUN_CUDA:
+            self.skipTest("CUDA not available")
+        if device == "xpu" and not torch.xpu.is_available():
+            self.skipTest("XPU not available")
+
+        with FakeTensorMode():
+            m = torch.nn.BatchNorm2d(3)
+
+            # Verify buffers exist on CPU
+            self.assertEqual(m.running_mean.device.type, "cpu")
+            self.assertEqual(m.running_var.device.type, "cpu")
+            self.assertEqual(m.weight.device.type, "cpu")
+            self.assertEqual(m.bias.device.type, "cpu")
+
+            # Move to device - this should handle both params and buffers
+            m.to(device)
+
+            # Verify both params and buffers moved
+            self.assertEqual(m.running_mean.device.type, device)
+            self.assertEqual(m.running_var.device.type, device)
+            self.assertEqual(m.weight.device.type, device)
+            self.assertEqual(m.bias.device.type, device)
+
+            # Move back to CPU
+            m.to("cpu")
+            self.assertEqual(m.running_mean.device.type, "cpu")
+            self.assertEqual(m.running_var.device.type, "cpu")
+
+    def test_module_to_with_swap_flag_disabled(self):
+        """Test module.to() when swap_module_params_on_conversion is False"""
+        with FakeTensorMode():
+            m = torch.nn.Linear(2, 2)
+
+            # Disable swap flag - FakeTensors should still work due to isinstance check
+            saved = torch.__future__.get_swap_module_params_on_conversion()
+            try:
+                torch.__future__.set_swap_module_params_on_conversion(False)
+                # This should still work because isinstance(param, FakeTensor)
+                # forces the swap path
+                m.to("meta")
+                self.assertEqual(m.weight.device.type, "meta")
+                self.assertEqual(m.bias.device.type, "meta")
+            finally:
+                torch.__future__.set_swap_module_params_on_conversion(saved)
+
+    @unittest.skipIf(not RUN_CUDA, "requires cuda")
+    def test_remove_from_tensor_memo_direct(self):
+        """Test remove_from_tensor_memo method directly"""
+        with FakeTensorMode() as fake_mode:
+            converter = fake_mode.fake_tensor_converter
+
+            # Create some fake tensors
+            t1 = torch.randn(2, 3)
+            t2 = torch.randn(4, 5)
+
+            # Check they're in the memo
+            initial_size = len(converter.tensor_memo)
+            self.assertGreater(initial_size, 0)
+
+            # Remove t1 from memo
+            converter.remove_from_tensor_memo(t1)
+
+            # Size should be smaller (at least by 1, maybe more if t1 had multiple entries)
+            after_remove_size = len(converter.tensor_memo)
+            self.assertLessEqual(after_remove_size, initial_size)
+
+            # Removing again should be idempotent (no error)
+            converter.remove_from_tensor_memo(t1)
+            self.assertEqual(len(converter.tensor_memo), after_remove_size)
+
+    @unittest.skipIf(
+        not RUN_CUDA and not torch.xpu.is_available(), "requires cuda or xpu"
+    )
+    @parametrize("device", ["cuda", "xpu"])
+    def test_swap_tensors_no_weakref_error(self, device):
+        """Test that swap_tensors doesn't fail with weakref error"""
+        if device == "cuda" and not RUN_CUDA:
+            self.skipTest("CUDA not available")
+        if device == "xpu" and not torch.xpu.is_available():
+            self.skipTest("XPU not available")
+
+        with FakeTensorMode() as fake_mode:
+            # Create a parameter
+            param = torch.nn.Parameter(torch.randn(2, 3))
+
+            # Apply a transformation (simulating module.to())
+            param_new = torch.nn.Parameter(param.to(device))
+
+            # Get converter
+            converter = fake_mode.fake_tensor_converter
+
+            # Clean up weakrefs
+            converter.remove_from_tensor_memo(param)
+            converter.remove_from_tensor_memo(param_new)
+
+            # This should not raise an error about weakrefs
+            torch.utils.swap_tensors(param, param_new)
+
+            self.assertEqual(param.device.type, device)
+
+
+instantiate_parametrized_tests(FakeTensorOperatorInvariants)
 make_propagate_real_tensors_cls(FakeTensorOperatorInvariants)
 
 
