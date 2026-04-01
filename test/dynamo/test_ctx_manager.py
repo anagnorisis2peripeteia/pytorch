@@ -16,10 +16,6 @@ from torch._dynamo.testing import (
 )
 from torch._dynamo.utils import counters
 from torch.nn import functional as F
-<<<<<<< HEAD
-=======
-from torch.testing._internal.common_cuda import TEST_MULTIGPU
->>>>>>> 2c563383808 (Linter run)
 from torch.testing._internal.common_gpu import PLATFORM_SUPPORTS_FLASH_ATTENTION
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,

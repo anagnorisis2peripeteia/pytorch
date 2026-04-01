@@ -18,12 +18,12 @@ from torch.quantization._quantized_conversions import (
 
 from torch.testing import make_tensor
 from torch.testing._internal.common_cuda import (
-    blas_library_context,
-    PLATFORM_SUPPORTS_BF16,
+    SM100OrLater,
     SM80OrLater,
     SM90OrLater,
-    SM100OrLater,
+    blas_library_context,
 )
+from torch.testing._internal.common_gpu import PLATFORM_SUPPORTS_BF16
 from torch.testing._internal.common_device_type import (
     dtypes,
     instantiate_device_type_tests,
