@@ -151,6 +151,7 @@ jobs:
           cuda-version: ${{ inputs.cuda-version }}
 
       - name: configure aws credentials
+        continue-on-error: true
         if: ${{ inputs.aws-role-to-assume != '' || inputs.runner-machine == 'nvidia' }}
         id: aws_creds
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
@@ -199,9 +200,9 @@ jobs:
           MAX_JOBS: 8
           CUDA_VERSION: ${{ inputs.cuda-version }}
           PYTHON_VERSION: ${{ inputs.python-version }}
-          SCCACHE_BUCKET: "ossci-compiler-cache"
-          SCCACHE_S3_KEY_PREFIX: ${{ github.workflow }}
-          SCCACHE_REGION: us-east-1
+          USE_SCCACHE: "1"
+          SCCACHE_DIR: "/c/sccache_dir"
+          SCCACHE_IDLE_TIMEOUT: "0"
           VC_PRODUCT: "BuildTools"
           VC_VERSION: ""
           VC_YEAR: "${{ inputs.vc-year }}"
@@ -275,9 +276,14 @@ jobs:
           echo "Collected CUDA libs and DLLs:"
           ls -lah /c/${{ github.run_id }}/build-results/*.lib /c/${{ github.run_id }}/build-results/*.dll 2>/dev/null || true
 
+      - name: Save Build artifacts to local storage
+        if: ${{ inputs.runner-machine == 'nvidia' && steps.build.outcome != 'skipped' }}
+        shell: bash
+        run: /c/upload-build-artifacts.sh ${{ github.run_id }} ${{ inputs.build-environment }} /c/${{ github.run_id }}
+
       # Upload to github so that people can click and download artifacts
       - name: Upload artifacts to s3
-        if: steps.build.outcome != 'skipped'
+        if: ${{ inputs.runner-machine != 'nvidia' && steps.build.outcome != 'skipped' }}
         uses: seemethere/upload-artifact-s3@baba72d0712b404f646cebe0730933554ebce96a # v5.1.0
         with:
           retention-days: 14
@@ -286,14 +292,14 @@ jobs:
           path: C:\${{ github.run_id }}\build-results
 
       - name: Upload sccache stats
-        if: steps.build.outcome != 'skipped'
+        if: ${{ inputs.runner-machine != 'nvidia' && steps.build.outcome != 'skipped' }}
         uses: ./.github/actions/upload-sccache-stats
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Teardown Windows
         uses: ./.github/actions/teardown-win
-        if: always()
+        if: ${{ inputs.runner-machine != 'nvidia' }}
         timeout-minutes: 120
         with:
           extra-delete-dir: /c/${{ github.run_id }}/build-results/

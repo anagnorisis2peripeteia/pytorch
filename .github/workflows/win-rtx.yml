@@ -4,7 +4,9 @@ on:
   schedule:
     # Run every day at 00:30 AM UTC
     - cron: '30 0 * * *'
-  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name == 'workflow_dispatch' }}-${{ github.event_name == 'schedule' }}

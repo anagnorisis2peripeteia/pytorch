@@ -122,6 +122,7 @@ jobs:
 
       - name: configure aws credentials
         id: aws_creds
+        continue-on-error: true
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: ${{ inputs.aws-role-to-assume }}
@@ -147,10 +148,15 @@ jobs:
           echo "monitor-script-pid=${!}" >> "${GITHUB_OUTPUT}"
 
       - name: Download PyTorch Build Artifacts
+        continue-on-error: true
         uses: seemethere/download-artifact-s3@1da556a7aa0a088e3153970611f6c432d58e80e6 # v4.2.0
         with:
           name: ${{ inputs.build-environment }}
           path: C:\${{ github.run_id }}\build-results
+
+      - name: Download Build Artifacts from local storage
+        shell: bash
+        run: /c/download-build-artifacts.sh ${{ github.run_id }} ${{ inputs.build-environment }} /c/
 
       - name: Validate Build Artifacts Integrity
         env:
@@ -288,6 +294,7 @@ jobs:
 
       - name: Upload test artifacts
         uses: ./.github/actions/upload-test-artifacts
+        continue-on-error: true
         if: github.repository_owner == 'pytorch' && always() && steps.test.conclusion && steps.test.conclusion != 'skipped'
         with:
           file-suffix: ${{ github.job }}-${{ matrix.config }}-${{ matrix.shard }}-${{ matrix.num_shards }}-${{ matrix.runner }}_${{ steps.get-job-id.outputs.job-id }}
