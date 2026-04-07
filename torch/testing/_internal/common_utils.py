@@ -1039,6 +1039,12 @@ def parse_cmd_line_args():
 
     set_rng_seed()
 
+def _get_int_signal() -> signal.Signals:
+    """Get the int signal. SIGINT for unix, SIGTERM for windows."""
+    if IS_WINDOWS:
+        return signal.SIGTERM  # type: ignore[attr-defined] # noqa: F821
+    else:
+        return signal.SIGINT
 
 def wait_for_process(p, timeout=None):
     try:
@@ -1054,7 +1060,7 @@ def wait_for_process(p, timeout=None):
             raise
     except subprocess.TimeoutExpired:
         # send SIGINT to give pytest a chance to make xml
-        p.send_signal(signal.SIGINT)
+        p.send_signal(_get_int_signal())
         exit_status = None
         try:
             exit_status = p.wait(timeout=5)
