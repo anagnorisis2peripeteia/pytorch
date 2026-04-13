@@ -491,6 +491,89 @@ def meta_rand_default(size, *, dtype=None, layout=None, device=None, pin_memory=
     )
 
 
+@register_meta(aten._philox_key_split.default)
+def meta_philox_key_split(key, num_splits):
+    torch._check(
+        key.dim() >= 1 and key.shape[-1] == 2,
+        lambda: f"_philox_key_split: key must have shape (*batch, 2), got shape {key.shape}",
+    )
+    torch._check(
+        key.dtype == torch.uint64,
+        lambda: f"_philox_key_split: key must have dtype uint64, got {key.dtype}",
+    )
+    torch._check(
+        num_splits > 0,
+        lambda: f"_philox_key_split: num_splits must be positive, got {num_splits}",
+    )
+    batch_sizes = key.shape[:-1]
+    return key.new_empty((num_splits, *batch_sizes, 2))
+
+
+@register_meta(aten._philox_key_fold_in.default)
+def meta_philox_key_fold_in(key, data):
+    torch._check(
+        key.dim() >= 1 and key.shape[-1] == 2,
+        lambda: f"_philox_key_fold_in: key must have shape (*batch, 2), got shape {key.shape}",
+    )
+    torch._check(
+        key.dtype == torch.uint64,
+        lambda: f"_philox_key_fold_in: key must have dtype uint64, got {key.dtype}",
+    )
+    return torch.empty_like(key)
+
+
+def _check_philox_distribution_args(op_name, self, key):
+    torch._check(
+        self.dtype.is_floating_point,
+        lambda: f"{op_name}: self must be a floating point tensor, got {self.dtype}",
+    )
+    torch._check(
+        key.dtype == torch.uint64,
+        lambda: f"{op_name}: key must have dtype uint64, got {key.dtype}",
+    )
+    torch._check(
+        self.device == key.device,
+        lambda: (
+            f"{op_name}: self and key must be on the same device, "
+            f"got {self.device} and {key.device}"
+        ),
+    )
+    torch._check(
+        key.dim() >= 1 and key.shape[-1] == 2,
+        lambda: (
+            f"{op_name}: key must have shape (2,) or (*batch, 2), got shape {key.shape}"
+        ),
+    )
+    if key.dim() > 1:
+        torch._check(
+            key.dim() == self.dim() + 1,
+            lambda: (
+                f"{op_name}: batched key must have ndim == output ndim + 1, "
+                f"got key shape {key.shape} with output shape {self.shape}"
+            ),
+        )
+        key_batch = key.shape[: self.dim()]
+        torch._check(
+            all(ks == 1 or ks == ss for ks, ss in zip(key_batch, self.shape)),
+            lambda: (
+                f"{op_name}: key batch shape {list(key_batch)} "
+                f"is not broadcastable with output shape {self.shape}"
+            ),
+        )
+
+
+@register_meta(aten._philox_normal_.default)
+def meta_philox_normal_(self, key, mean=0.0, std=1.0):
+    _check_philox_distribution_args("_philox_normal_", self, key)
+    return self
+
+
+@register_meta(aten._philox_uniform_.default)
+def meta_philox_uniform_(self, key, low=0.0, high=1.0):
+    _check_philox_distribution_args("_philox_uniform_", self, key)
+    return self
+
+
 @register_meta([aten._fft_c2r.default, aten._fft_c2r.out])
 @out_wrapper()
 def meta_fft_c2r(self: Tensor, dim: list[int], normalization: int, lastdim: int):
@@ -919,7 +1002,7 @@ def make_dep_token(
     pin_memory=None,
     memory_format=None,
 ):
-    return torch.empty(0, device="meta")
+    return torch.empty((), device="meta")
 
 
 @register_meta(aten.sym_constrain_range.default)
@@ -2915,6 +2998,13 @@ def check_dim_size(tensor, dim, dim_size, size):
     )
 
 
+@register_meta(aten.quantize_per_tensor)
+def meta_quantize_per_tensor(
+    input: torch.Tensor, scale: float, zero_point: int, dtype: torch.dtype
+) -> torch.Tensor:
+    return torch.empty_like(input)
+
+
 @register_meta(aten.avg_pool2d.default)
 def meta_avg_pool2d(
     input,
@@ -3497,8 +3587,8 @@ def meta_complex(real, imag):
 @register_meta([aten.nonzero_static.default, aten.nonzero_static.out])
 @out_wrapper()
 def nonzero_static(self, *, size, fill_value: int = -1):
-    # The impl of xpu nonzero_static is different with cuda but aligned with cpu
-    if device_hint(self) in ("cpu", "xpu"):
+    # The impl of nonzero_static on xpu and mps differs from cuda but aligned with cpu
+    if device_hint(self) in ("cpu", "mps", "xpu"):
         return self.new_empty((size, self.dim()), dtype=torch.long)
     else:
         return torch.empty_strided(
@@ -5998,14 +6088,23 @@ def meta__scaled_dot_product_fused_attention_overrideable(
     return_debug_mask: bool = False,
     scale: float | None = None,
 ):
-    B = query.size(0)
-    H_Q = query.size(1)
-    S_Q = query.size(2)
-    S_KV = key.size(2)
+    # Explicitly handle 3D (H, S, D) and 4D (B, H, S, D) inputs,
+    # matching the C++ runtime in aten_mtia_ops.cpp.
+    B, H_Q, S_Q = 0, 0, 0
+    if query.dim() == 4:
+        B, H_Q, S_Q, _ = query.size()
+    elif query.dim() == 3:
+        H_Q, S_Q, _ = query.size()
+        B = 1
+    else:
+        raise RuntimeError("query must be 3D or 4D")
+    S_KV = key.size(-2)
     D_V = value.size(-1)
 
-    res_shape = (B, H_Q, S_Q, D_V)
-    res = alloc_with_matching_layout(query, res_shape)
+    # Preserve input dimensionality for the output shape
+    out_shape = list(query.shape)
+    out_shape[-1] = D_V
+    res = alloc_with_matching_layout(query, tuple(out_shape))
 
     logsum_exp = torch.empty(
         (B, H_Q, S_Q),
@@ -6028,6 +6127,34 @@ def meta__scaled_dot_product_fused_attention_overrideable(
         offset,
         None,
     )
+
+
+@register_meta(aten._scaled_dot_product_fused_attention_overrideable_backward)
+def meta__scaled_dot_product_fused_attention_overrideable_backward(
+    grad_out: Tensor,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    attn_bias: Tensor,
+    grad_input_mask: list[bool],
+    out: Tensor,
+    logsumexp: Tensor,
+    cum_seq_q: Tensor,
+    cum_seq_k: Tensor,
+    max_q: int,
+    max_k: int,
+    dropout_p: float,
+    is_causal: bool,
+    philox_seed: Tensor,
+    philox_offset: Tensor,
+    *,
+    scale: float | None = None,
+):
+    grad_q = torch.empty_like(query)
+    grad_k = torch.empty_like(key)
+    grad_v = torch.empty_like(value)
+    grad_attn_bias = torch.empty_like(attn_bias) if attn_bias is not None else None
+    return grad_q, grad_k, grad_v, grad_attn_bias
 
 
 @register_meta(
@@ -6656,7 +6783,11 @@ def _check_scaled_mm_sizes(
         lambda: f"Expected both inputs to be fp8 or fp4 types but got self.dtype={self.dtype} and mat2.dtype={mat2.dtype}",
     )
 
-    if device_hint(self) == "cuda" or device_hint(self) == "xpu":
+    if (
+        device_hint(self) == "cuda"
+        or device_hint(self) == "xpu"
+        or device_hint(self) == "cpu"
+    ):
 
         def is_row_major(stride):
             return stride[0] > stride[1] and stride[1] == 1
@@ -6667,22 +6798,23 @@ def _check_scaled_mm_sizes(
         def has_zero_dim(tensor_2d):
             return tensor_2d.size(0) == 0 or tensor_2d.size(1) == 0
 
-        torch._check(
-            is_row_major(self.stride()) or has_zero_dim(self),
-            lambda: f"self must be row_major, got stride {self.stride()}",
-        )
-        torch._check(
-            is_col_major(mat2.stride()) or has_zero_dim(mat2),
-            lambda: f"mat2 must be col_major, got stride {mat2.stride()}",
-        )
-        torch._check(
-            self.size(1) % 16 == 0,
-            lambda: f"Expected self.size(1) to be divisible by 16, but got self.size(1)={self.size(1)}",
-        )
-        torch._check(
-            mat2.size(0) % 16 == 0 and mat2.size(1) % 16 == 0,
-            lambda: f"Expected both dimensions of mat2 to be divisible by 16 but got {mat2.shape}",
-        )
+        if device_hint(self) != "cpu":
+            torch._check(
+                is_row_major(self.stride()) or has_zero_dim(self),
+                lambda: f"self must be row_major, got stride {self.stride()}",
+            )
+            torch._check(
+                is_col_major(mat2.stride()) or has_zero_dim(mat2),
+                lambda: f"mat2 must be col_major, got stride {mat2.stride()}",
+            )
+            torch._check(
+                self.size(1) % 16 == 0,
+                lambda: f"Expected self.size(1) to be divisible by 16, but got self.size(1)={self.size(1)}",
+            )
+            torch._check(
+                mat2.size(0) % 16 == 0 and mat2.size(1) % 16 == 0,
+                lambda: f"Expected both dimensions of mat2 to be divisible by 16 but got {mat2.shape}",
+            )
 
         # determine scaling type and check input dimensions (refer to Blas.cpp op)
 
@@ -6897,7 +7029,11 @@ def _check_scaled_mm_sizes_v2(
             SwizzleType.NO_SWIZZLE,
         ]
 
-    if device_hint(self) == "cuda" or device_hint(self) == "xpu":
+    if (
+        device_hint(self) == "cuda"
+        or device_hint(self) == "xpu"
+        or device_hint(self) == "cpu"
+    ):
 
         def is_row_major(stride):
             return stride[0] > stride[1] and stride[1] == 1
@@ -6908,22 +7044,23 @@ def _check_scaled_mm_sizes_v2(
         def has_zero_dim(tensor_2d):
             return tensor_2d.size(0) == 0 or tensor_2d.size(1) == 0
 
-        torch._check(
-            is_row_major(self.stride()) or has_zero_dim(self),
-            lambda: f"self must be row_major, got stride {self.stride()}",
-        )
-        torch._check(
-            is_col_major(mat2.stride()) or has_zero_dim(mat2),
-            lambda: f"mat2 must be col_major, got stride {mat2.stride()}",
-        )
-        torch._check(
-            self.size(1) % 16 == 0,
-            lambda: f"Expected self.size(1) to be divisible by 16, but got self.size(1)={self.size(1)}",
-        )
-        torch._check(
-            mat2.size(0) % 16 == 0 and mat2.size(1) % 16 == 0,
-            lambda: f"Expected both dimensions of mat2 to be divisible by 16 but got {mat2.shape}",
-        )
+        if device_hint(self) != "cpu":
+            torch._check(
+                is_row_major(self.stride()) or has_zero_dim(self),
+                lambda: f"self must be row_major, got stride {self.stride()}",
+            )
+            torch._check(
+                is_col_major(mat2.stride()) or has_zero_dim(mat2),
+                lambda: f"mat2 must be col_major, got stride {mat2.stride()}",
+            )
+            torch._check(
+                self.size(1) % 16 == 0,
+                lambda: f"Expected self.size(1) to be divisible by 16, but got self.size(1)={self.size(1)}",
+            )
+            torch._check(
+                mat2.size(0) % 16 == 0 and mat2.size(1) % 16 == 0,
+                lambda: f"Expected both dimensions of mat2 to be divisible by 16 but got {mat2.shape}",
+            )
 
         def is_tensorwise(recipe_a: list[ScalingType], recipe_b: list[ScalingType]):
             return (
