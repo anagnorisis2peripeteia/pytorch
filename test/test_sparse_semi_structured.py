@@ -352,7 +352,7 @@ class TestSparseSemiStructured(TestCase):
                         RuntimeError,
                         "CUDA error: operation not supported when calling `cusparseLtMatmulDescriptorInit",
                     ):
-                    sparse_result = torch.mm(A_sparse, B)
+                        sparse_result = torch.mm(A_sparse, B)
                 
         else:
             dense_result = torch.mm(A, B)
