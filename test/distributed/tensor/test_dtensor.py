@@ -1468,6 +1468,40 @@ class DTensorMeshTest(DTensorTestBase):
         self.assertEqual(result.stride(), dtensor.stride())
         self.assertEqual(result.to_local(), dtensor.to_local())
 
+    @with_comms
+    def test_clip_grad_norm_mixed_mesh(self):
+        # Regression test: clip_grad_norm_ should handle parameters whose
+        # gradients live on different DeviceMesh objects (gh-180346).
+        mesh_a = DeviceMesh(self.device_type, torch.arange(self.world_size))
+        mesh_b = DeviceMesh(
+            self.device_type, torch.arange(self.world_size - 1, -1, -1)
+        )
+
+        pa = torch.nn.Parameter(
+            DTensor.from_local(
+                torch.tensor([3.0], device=self.device_type),
+                mesh_a,
+                [Replicate()],
+            )
+        )
+        pb = torch.nn.Parameter(
+            DTensor.from_local(
+                torch.tensor([4.0], device=self.device_type),
+                mesh_b,
+                [Replicate()],
+            )
+        )
+        # Manufacture .grad by hand so we don't need a full training loop.
+        pa.grad = pa.detach().clone()
+        pb.grad = pb.detach().clone()
+
+        # Should not raise despite the two grads coming from different meshes.
+        total_norm = torch.nn.utils.clip_grad_norm_([pa, pb], max_norm=1.0)
+        expected = torch.linalg.vector_norm(
+            torch.tensor([3.0, 4.0], device=self.device_type)
+        )
+        self.assertEqual(total_norm, expected)
+
 
 DTensorMeshTestWithLocalTensor = create_local_tensor_test_class(
     DTensorMeshTest,
@@ -1479,6 +1513,8 @@ DTensorMeshTestWithLocalTensor = create_local_tensor_test_class(
         "test_redistribute_sub_mesh",
         # Local tensor mode doesn't support tensors of different types on different ranks
         "test_metadata_consistency_check",
+        # clip_grad_norm_ operates on DTensor directly, not local tensors
+        "test_clip_grad_norm_mixed_mesh",
     ],
 )
 
