@@ -162,6 +162,45 @@ else:
         pass
 
 
+def _build_estimated_effective_user_counts(gm: GraphModule) -> dict[Node, int]:
+    """Precompute effective user counts for all nodes in one linear scan.
+
+    Adjacent fusible nodes get the same span ID.  Users sharing a span
+    are counted once because they will almost certainly fuse together.
+    """
+    from torch._inductor.fx_passes.fusion_regions import is_fusible_node
+
+    span_of: dict[Node, int] = {}
+    span_id = -1
+    prev_fusible = False
+    for node in gm.graph.nodes:
+        if is_fusible_node(node):
+            if not prev_fusible:
+                span_id += 1
+            span_of[node] = span_id
+            prev_fusible = True
+        else:
+            prev_fusible = False
+
+    counts: dict[Node, int] = {}
+    for n in gm.graph.nodes:
+        if len(n.users) <= 1:
+            counts[n] = len(n.users)
+            continue
+        seen_spans: set[int] = set()
+        effective = 0
+        for user in n.users:
+            sid = span_of.get(user)
+            if sid is None:
+                effective += 1
+            elif sid not in seen_spans:
+                seen_spans.add(sid)
+                effective += 1
+        counts[n] = effective
+
+    return counts
+
+
 def may_get_constant_buffer_dtype(constant_buffer: sympy.Expr) -> torch.dtype | None:
     assert isinstance(
         constant_buffer, (sympy.Symbol, sympy.Expr, sympy.core.numbers.Integer)
@@ -404,7 +443,7 @@ class GraphLowering(torch.fx.Interpreter):
         self.const_module = const_module
         self.inputs_to_check = inputs_to_check
         self._defers_input_alignment = False
-        self._fusion_region_of: dict[Node, OrderedSet[Node]] | None = None
+        self._estimated_effective_user_counts: dict[Node, int] | None = None
 
         self.extra_traceback = False  # we do our own error wrapping
         if shape_env is None:
@@ -583,35 +622,10 @@ class GraphLowering(torch.fx.Interpreter):
         # Cache for dep size hints to avoid expensive recomputation
         self.dep_size_hint_cache: dict[tuple[Dep, bool], int] = {}
 
-    def _get_fusion_region_of(self) -> dict[Node, OrderedSet[Node]]:
-        if self._fusion_region_of is None:
-            from torch._inductor.fx_passes.fusion_regions import build_fusion_regions
-
-            self._fusion_region_of = build_fusion_regions(self.orig_gm)
-        return self._fusion_region_of
-
     def _count_effective_users(self, n: Node) -> int:
-        if len(n.users) <= 1:
-            return len(n.users)
-
-        region_of = self._get_fusion_region_of()
-        counted_regions: OrderedSet[int] = OrderedSet()
-        effective_users = 0
-
-        for user in n.users:
-            user_region = region_of.get(user)
-            if user_region is None:
-                effective_users += 1
-                continue
-
-            region_id = id(user_region)
-            if region_id in counted_regions:
-                continue
-
-            counted_regions.add(region_id)
-            effective_users += 1
-
-        return effective_users
+        if self._estimated_effective_user_counts is None:
+            self._estimated_effective_user_counts = _build_estimated_effective_user_counts(self.orig_gm)
+        return self._estimated_effective_user_counts.get(n, 0)
 
     def freeze_runtime_asserts(self) -> None:
         self._shape_env.freeze_runtime_asserts()
