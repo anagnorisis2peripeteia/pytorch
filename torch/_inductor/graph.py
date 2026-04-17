@@ -187,7 +187,7 @@ def _build_estimated_effective_user_counts(gm: GraphModule) -> dict[Node, int]:
         if len(n.users) <= 1:
             counts[n] = len(n.users)
             continue
-        seen_spans: set[int] = set()
+        seen_spans: OrderedSet[int] = OrderedSet()
         effective = 0
         for user in n.users:
             sid = span_of.get(user)
@@ -624,7 +624,9 @@ class GraphLowering(torch.fx.Interpreter):
 
     def _count_effective_users(self, n: Node) -> int:
         if self._estimated_effective_user_counts is None:
-            self._estimated_effective_user_counts = _build_estimated_effective_user_counts(self.orig_gm)
+            self._estimated_effective_user_counts = (
+                _build_estimated_effective_user_counts(self.orig_gm)
+            )
         return self._estimated_effective_user_counts.get(n, 0)
 
     def freeze_runtime_asserts(self) -> None:
