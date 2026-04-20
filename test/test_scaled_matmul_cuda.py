@@ -2609,6 +2609,30 @@ class TestFP8Matmul(TestCase):
         torch.compile(fn, fullgraph=True)(a, b, scale_a, scale_b)
 
 
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8_GROUPED_GEMM, f8_grouped_msg)
+    def test_scaled_grouped_mm_v2_fullgraph(self, device) -> None:
+        fp8_dtype = e4m3_type
+        m, n, k, n_groups = 16, 32, 64, 4
+        a = torch.randn(m, k * n_groups, device=device).to(fp8_dtype)
+        b = torch.randn(n, k * n_groups, device=device).to(fp8_dtype)
+        scale_a = torch.rand(m * n_groups, device=device, dtype=torch.float32)
+        scale_b = torch.rand(n * n_groups, device=device, dtype=torch.float32)
+        offs = torch.arange(k, n_groups * k + 1, k, device=device, dtype=torch.int32)
+
+        def fn(a, b, scale_a, scale_b, offs):
+            return torch.nn.functional.scaled_grouped_mm(
+                a, b.t(),
+                scale_a,
+                torch.nn.functional.ScalingType.RowWise,
+                scale_b,
+                torch.nn.functional.ScalingType.RowWise,
+                offs=offs,
+                output_dtype=torch.bfloat16,
+            )
+
+        torch.compile(fn, fullgraph=True)(a, b, scale_a, scale_b, offs)
+
+
 instantiate_device_type_tests(TestFP8Matmul, globals(), allow_xpu=True)
 
 if __name__ == '__main__':
