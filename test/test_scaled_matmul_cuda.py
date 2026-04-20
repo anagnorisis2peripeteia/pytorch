@@ -2586,6 +2586,29 @@ class TestFP8Matmul(TestCase):
         torch.testing.assert_close(C, C_ref, atol=0, rtol=0)
 
 
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    def test_scaled_mm_v2_fullgraph(self, device) -> None:
+        m, n, k = 15, 32, 16
+        a = torch.randn(m, k, device=device, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
+        b = torch.randn(k, n, device=device, dtype=torch.bfloat16).to(torch.float8_e4m3fn).t().contiguous().t()
+        scale_a = torch.ones(1, device=device)
+        scale_b = torch.ones(1, device=device)
+
+        def fn(a, b, scale_a, scale_b):
+            return torch.nn.functional.scaled_mm(
+                a, b,
+                scale_a=scale_a,
+                scale_recipe_a=torch.nn.functional.ScalingType.TensorWise,
+                swizzle_a=torch.nn.functional.SwizzleType.NO_SWIZZLE,
+                scale_b=scale_b,
+                scale_recipe_b=torch.nn.functional.ScalingType.TensorWise,
+                swizzle_b=torch.nn.functional.SwizzleType.NO_SWIZZLE,
+                output_dtype=torch.bfloat16,
+            )
+
+        torch.compile(fn, fullgraph=True)(a, b, scale_a, scale_b)
+
+
 instantiate_device_type_tests(TestFP8Matmul, globals(), allow_xpu=True)
 
 if __name__ == '__main__':
