@@ -57,6 +57,8 @@ from torch.testing._internal.common_utils import (
     parametrize,
     skipIfWindows,
     subtest,
+    TEST_CUDA,
+    TEST_XPU,
 )
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU, requires_triton
 from torch.testing._internal.triton_utils import requires_gpu_and_triton
@@ -667,7 +669,7 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
     @inductor_config.patch("fx_graph_cache", True)
     @functorch_config.patch({"enable_autograd_cache": True})
     @functorch_config.patch({"strict_autograd_cache": True})
-    @unittest.skipIf(not HAS_GPU, "GPU is unavailable")
+    @unittest.skipIf(not (TEST_CUDA or TEST_XPU), "GPU is unavailable")
     @requires_triton()
     def test_non_bundled_to_bundled_config_change(self):
         if functorch_config.bundled_autograd_cache:
