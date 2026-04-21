@@ -38,7 +38,7 @@ import types
 import weakref
 from collections.abc import Callable, MutableMapping
 from types import ModuleType
-from typing import Any, NamedTuple, NoReturn, overload, TYPE_CHECKING, Union
+from typing import Any, NamedTuple, NoReturn, overload, TYPE_CHECKING, Union, _UnionGenericAlias
 
 import sympy
 
@@ -4378,7 +4378,7 @@ class SourcelessBuilder:
             return torch._dynamo.variables.higher_order_ops.FlexAttentionBackwardHighOrderVariable(
                 value
             )
-        elif isinstance(value, (types.GenericAlias, types.UnionType)):
+        elif isinstance(value, (types.GenericAlias, types.UnionType, _UnionGenericAlias)):
             return TypingVariable(value)
         elif is_namedtuple(value):
             output = [
