@@ -2531,7 +2531,12 @@ class PythonWrapperCodegen(CodeGen):
 
             try:
                 output.writeline(f"{name} = pickle.loads({pickle.dumps(value)!r})")
-            except (TypeError, AttributeError, pickle.PicklingError) as e:
+            except (
+                TypeError,
+                AttributeError,
+                RuntimeError,
+                pickle.PicklingError,
+            ) as e:
                 output.writeline(
                     f'raise TypeError("Failed to pickle opaque type {type(value)} for variable {name}: {str(e)}")'
                 )

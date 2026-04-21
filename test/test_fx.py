@@ -2464,6 +2464,42 @@ class TestFX(JitTestCase):
         gm = torch.fx.symbolic_trace(m)
         gm_copy = copy.deepcopy(gm)
 
+    def test_deepcopy_with_torchbind_attr(self):
+        # Torchbind singletons (e.g. ProcessGroup from make_fx-traced
+        # collectives) land on GraphModule as get_attr targets. Classes
+        # without __getstate__/__setstate__ are shared by reference with a
+        # warning; classes with pickle support are deep-copied normally.
+        from torch.testing._internal.torchbind_impls import load_torchbind_test_lib
+
+        load_torchbind_test_lib()
+
+        def _build_gm(name, obj):
+            root = torch.nn.Module()
+            setattr(root, name, obj)
+            graph = torch.fx.Graph()
+            x = graph.placeholder("x")
+            graph.output((x, graph.get_attr(name)))
+            return torch.fx.GraphModule(root, graph)
+
+        # Class without __getstate__: shared by reference + warning.
+        no_pickle = torch.classes._TorchScriptTesting._ReLUClass()
+        gm_no_pickle = _build_gm("_relu", no_pickle)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gm_copy = copy.deepcopy(gm_no_pickle)
+        self.assertIs(gm_copy._relu, no_pickle)
+        self.assertTrue(
+            any("__getstate__/__setstate__" in str(w.message) for w in caught)
+        )
+
+        # Class with __getstate__/__setstate__: falls through to normal
+        # deepcopy, producing a distinct object with equal contents.
+        pickleable = torch.classes._TorchScriptTesting._Foo(1, 2)
+        gm_pickle = _build_gm("_foo", pickleable)
+        gm_copy = copy.deepcopy(gm_pickle)
+        self.assertIsNot(gm_copy._foo, pickleable)
+        self.assertEqual(gm_copy._foo.__obj_flatten__(), pickleable.__obj_flatten__())
+
     def test_ctx_mgr(self):
         @contextlib.contextmanager
         def do_nothing():

@@ -1015,6 +1015,21 @@ class {module_name}(torch.nn.Module):
     def __deepcopy__(self, memo):
         res = type(self).__new__(type(self))
         memo[id(self)] = res
+        # Torchbind objects without __getstate__/__setstate__ cannot be copied
+        # (e.g. ProcessGroup wraps a live NCCL communicator). Pre-seed memo so
+        # they are shared by reference. Classes that do define pickle support
+        # fall through to the normal deepcopy path.
+        for v in self.__dict__.values():
+            if isinstance(v, torch.ScriptObject) and not (
+                v._has_method("__getstate__") and v._has_method("__setstate__")
+            ):
+                warnings.warn(
+                    f"Torchbind class {v._type().qualified_name()} has no "
+                    "__getstate__/__setstate__; sharing by reference in "
+                    "GraphModule.__deepcopy__.",
+                    stacklevel=2,
+                )
+                memo.setdefault(id(v), v)
         fake_mod = _CodeOnlyModule(copy.deepcopy(self.__dict__, memo))
         self._deepcopy_init()(res, fake_mod, fake_mod.__dict__["_graph"])
         # hooks are lost during `GraphModule.__init__`, so we need to copy over

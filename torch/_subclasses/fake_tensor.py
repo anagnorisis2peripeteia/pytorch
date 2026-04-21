@@ -1816,6 +1816,14 @@ class FakeTensorMode(TorchDispatchMode):
                 result.append(type(arg))
                 result.append(id(arg))
                 id_hashed_objects.append(arg)
+            elif isinstance(arg, (torch.ScriptObject, FakeScriptObject)):
+                # Torchbind objects (e.g. ProcessGroup in c10d ops) are
+                # by-reference singletons with no meaningful __eq__/__hash__
+                # defined at the class level. Id-hash them so the cache key
+                # stays comparable.
+                result.append(type(arg))
+                result.append(id(arg))
+                id_hashed_objects.append(arg)
             elif isinstance(arg, FunctionalizeCtxWrapper):
                 # Special case for AOT Dispatcher first pass, where the fake
                 # tensor is called on the functional wrapper of the subgraph.

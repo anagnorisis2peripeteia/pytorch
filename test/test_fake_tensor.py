@@ -2360,6 +2360,27 @@ class FakeTensorDispatchCache(TestCase):
             # Python hashes 1.0 to the same value as 1. Make sure the
             # cache key calculation differentiates them.
             self._test_cache_key(fm, 1.0, 1.0, 1)
+
+    def test_cache_key_torchbind(self):
+        # Torchbind singletons (e.g. ProcessGroup) have no __eq__ defined;
+        # _prep_args_for_hash must id-hash them instead of embedding the raw
+        # object in the cache key, or cache lookups crash on comparison.
+        from torch.testing._internal.torchbind_impls import load_torchbind_test_lib
+
+        load_torchbind_test_lib()
+        obj_a = torch.classes._TorchScriptTesting._ReLUClass()
+        obj_b = torch.classes._TorchScriptTesting._ReLUClass()
+        with FakeTensorMode() as fm:
+            x = torch.randn(4, 3)
+            func = aten.add.Tensor
+            state = _CacheKeyState()
+            key_a1 = fm._cache_key(state, func, [x, obj_a], {})
+            key_a2 = fm._cache_key(state, func, [x, obj_a], {})
+            key_b = fm._cache_key(state, func, [x, obj_b], {})
+            # Same object should produce equal keys; comparison must not raise.
+            self.assertEqual(key_a1, key_a2)
+            # Different torchbind instances should produce different keys.
+            self.assertNotEqual(key_a1, key_b)
             self._test_cache_key(fm, 0.0, 0.0, 0)
 
     def test_empty_list(self):
