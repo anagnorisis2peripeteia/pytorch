@@ -270,8 +270,8 @@ KERNEL_COUNT_OVERRIDES = {
     "test_adamax_tensor_lr_weight_decay_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_asgd_tensor_lr_weight_decay_maximize_capturable_cuda": lambda x: assert_expected_inline(x, """5"""),
     "test_asgd_tensor_lr_weight_decay_maximize_capturable_xpu": lambda x: assert_expected_inline(x, """5"""),
-    "test_nadam_tensor_lr_weight_decay_momentum_decay_decoupled_weight_decay_capturable_cuda": lambda x: assert_expected_inline(x, """7"""),  # noqa: B950
-    "test_nadam_tensor_lr_weight_decay_momentum_decay_decoupled_weight_decay_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),  # noqa: B950
+    "test_nadam_tensor_lr_weight_decay_momentum_decay_decoupled_weight_decay_capturable_cuda": lambda x: assert_expected_inline(x, """7"""),
+    "test_nadam_tensor_lr_weight_decay_momentum_decay_decoupled_weight_decay_capturable_xpu": lambda x: assert_expected_inline(x, """6"""),
     "test_nadam_weight_decay_foreach_cuda": lambda x: assert_expected_inline(x, """5"""),
     "test_nadam_weight_decay_maximize_foreach_cuda": lambda x: assert_expected_inline(x, """5"""),
     "test_nadam_weight_decay_momentum_decay_capturable_foreach_cuda": lambda x: assert_expected_inline(x, """5"""),
