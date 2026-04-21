@@ -2595,14 +2595,14 @@ class TestFP8Matmul(TestCase):
         scale_b = torch.ones(1, device=device)
 
         def fn(a, b, scale_a, scale_b):
-            return torch.nn.functional.scaled_mm(
+            return scaled_mm(
                 a, b,
                 scale_a=scale_a,
-                scale_recipe_a=torch.nn.functional.ScalingType.TensorWise,
-                swizzle_a=torch.nn.functional.SwizzleType.NO_SWIZZLE,
+                scale_recipe_a=ScalingType.TensorWise,
+                swizzle_a=SwizzleType.NO_SWIZZLE,
                 scale_b=scale_b,
-                scale_recipe_b=torch.nn.functional.ScalingType.TensorWise,
-                swizzle_b=torch.nn.functional.SwizzleType.NO_SWIZZLE,
+                scale_recipe_b=ScalingType.TensorWise,
+                swizzle_b=SwizzleType.NO_SWIZZLE,
                 output_dtype=torch.bfloat16,
             )
 
@@ -2620,12 +2620,12 @@ class TestFP8Matmul(TestCase):
         offs = torch.arange(k, n_groups * k + 1, k, device=device, dtype=torch.int32)
 
         def fn(a, b, scale_a, scale_b, offs):
-            return torch.nn.functional.scaled_grouped_mm(
+            return scaled_grouped_mm(
                 a, b.t(),
                 scale_a,
-                torch.nn.functional.ScalingType.RowWise,
+                ScalingType.RowWise,
                 scale_b,
-                torch.nn.functional.ScalingType.RowWise,
+                ScalingType.RowWise,
                 offs=offs,
                 output_dtype=torch.bfloat16,
             )
