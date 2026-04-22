@@ -186,7 +186,10 @@ class TestOrigami(TestCase):
             with self.subTest(op_name=op_name):
                 origami_case = self._compile_with_config(
                     op_name,
-                    {**self._origami_default_config(), "origami_topk": ORIGAMI_COMPILE_TOPK},
+                    {
+                        **self._origami_default_config(),
+                        "origami_topk": ORIGAMI_COMPILE_TOPK,
+                    },
                     size=256,
                 )
                 max_autotune_case = self._compile_with_config(
