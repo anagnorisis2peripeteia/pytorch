@@ -118,8 +118,7 @@ COPY ./common/install_openmpi.sh install_openmpi.sh
 RUN if [ -n "${CUDA_VERSION}" ]; then bash install_openmpi.sh; fi
 RUN rm install_openmpi.sh
 
-WORKDIR /app
-RUN apt-get update && apt-get install -y git python3 python3-pip python3-setuptools
+RUN apt-get update && apt-get install -y python3 python3-pip python3-setuptools
 RUN pip install rocm-origami
 
 # Include BUILD_ENVIRONMENT environment variable in image
