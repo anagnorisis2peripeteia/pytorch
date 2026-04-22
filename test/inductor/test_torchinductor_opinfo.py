@@ -1414,11 +1414,8 @@ class TestInductorOpInfo(TestCase):
                     has_rng_op, args, kwargs
                 ):
                     precision_ctx = (
-                        torch._inductor.config.patch(
-                            "emulate_precision_casts", True
-                        )
-                        if (op_name, dtype)
-                        in inductor_emulate_precision_casts
+                        torch._inductor.config.patch("emulate_precision_casts", True)
+                        if (op_name, dtype) in inductor_emulate_precision_casts
                         else contextlib.nullcontext()
                     )
                     with context_fn(), precision_ctx:
