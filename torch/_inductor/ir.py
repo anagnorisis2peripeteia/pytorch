@@ -9631,7 +9631,7 @@ class StorageBox(MutableBox):
             )
             if total_read_bytes > 0 and output_bytes > 0:
                 if has_non_fusible_users:
-                    return total_read_bytes >= output_bytes
+                    return total_read_bytes > output_bytes
                 return total_read_bytes * (users - 1) >= output_bytes * (1 + users)
             return self.num_reads() > config.realize_reads_threshold
         return False
