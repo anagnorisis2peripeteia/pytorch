@@ -10,6 +10,10 @@ import sys
 from unittest import mock
 
 import torch
+
+
+torch._inductor.config.epilogue_fusion_user_defined_triton_kernel = True
+
 import torch._dynamo.testing
 import torch._inductor.test_case
 import torch.utils._pytree as pytree
