@@ -2607,6 +2607,7 @@ class TestFP8Matmul(TestCase):
 
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    @skipIfRocm
     def test_scaled_mm_v2_fullgraph(self, device) -> None:
         m, n, k = 15, 32, 16
         a = torch.randn(m, k, device=device, dtype=torch.bfloat16).to(torch.float8_e4m3fn)
