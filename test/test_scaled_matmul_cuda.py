@@ -53,6 +53,7 @@ from torch.testing._internal.common_utils import (
     runOnRocmArch,
     skipIfRocm,
     TEST_CUDA,
+    TEST_WITH_TORCHDYNAMO,
     TestCase,
     skipIfXpu,
 )
@@ -1198,9 +1199,34 @@ class TestFP8Matmul(TestCase):
         x_fp8 = x.to(e4m3_type)
         y_fp8 = y.to(e4m3_type).t()
 
-        with self.assertRaisesRegex(
-            ValueError, re.escape("scale_b must have 1 Float element")
-        ):
+        # Under dynamo, `with assertRaisesRegex` causes a graph break: the first
+        # scaled_mm_wrap call gets traced, hits the v2 meta (which uses a
+        # different combined error message than the C++ op), and the wrapped
+        # RuntimeError propagates. Subsequent calls inside resume frames run
+        # eagerly, hitting the C++ op directly and raising the TORCH_CHECK_VALUE
+        # / TORCH_CHECK_INDEX messages. Accept either.
+        if TEST_WITH_TORCHDYNAMO:
+            value_exc: type | tuple[type, ...] = (ValueError, RuntimeError)
+            index_exc: type | tuple[type, ...] = (IndexError, RuntimeError)
+            tensorwise_msg = (
+                "scale_b must have 1 Float element"
+                "|For Tensorwise scaling, both scale_a and scale_b must be single element float"
+            )
+            rowwise_numel_msg = (
+                f"scale_b must have {N} Float elements, got {N + 1}"
+                f"|For Rowwise scaling, scale_a must have {M} elements"
+            )
+        else:
+            value_exc = ValueError
+            index_exc = IndexError
+            tensorwise_msg = re.escape("scale_b must have 1 Float element")
+            rowwise_numel_msg = re.escape(
+                f"scale_b must have {N} Float elements, got {N + 1}"
+            )
+        index_msg = re.escape("Dimension out of range")
+        stride_msg = re.escape("expected scale_b.stride(1) to be 1, but got 2")
+
+        with self.assertRaisesRegex(value_exc, tensorwise_msg):
             scaled_mm_wrap(
                 x_fp8,
                 y_fp8,
@@ -1211,9 +1237,7 @@ class TestFP8Matmul(TestCase):
                 out_dtype=torch.bfloat16,
             )
 
-        with self.assertRaisesRegex(
-            ValueError, re.escape(f"scale_b must have {N} Float elements, got {N + 1}"),
-        ):
+        with self.assertRaisesRegex(value_exc, rowwise_numel_msg):
             scaled_mm_wrap(
                 x_fp8,
                 y_fp8,
@@ -1223,9 +1247,7 @@ class TestFP8Matmul(TestCase):
                 scale_recipe_b=ScalingType.RowWise,
                 out_dtype=torch.bfloat16,
             )
-        with self.assertRaisesRegex(
-            IndexError, re.escape("Dimension out of range")
-        ):
+        with self.assertRaisesRegex(index_exc, index_msg):
             scaled_mm_wrap(
                 x_fp8,
                 y_fp8,
@@ -1236,9 +1258,7 @@ class TestFP8Matmul(TestCase):
                 out_dtype=torch.bfloat16,
             )
 
-        with self.assertRaisesRegex(
-            ValueError, re.escape("expected scale_b.stride(1) to be 1, but got 2"),
-        ):
+        with self.assertRaisesRegex(value_exc, stride_msg):
             scaled_mm_wrap(
                 x_fp8,
                 y_fp8,
