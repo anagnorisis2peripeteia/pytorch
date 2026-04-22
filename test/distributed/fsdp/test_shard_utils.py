@@ -9,13 +9,14 @@ from torch.distributed.fsdp._shard_utils import (
 from torch.testing._internal.common_fsdp import FSDPTest
 from torch.testing._internal.common_utils import run_tests
 from torch.testing._internal.distributed._tensor.common_dtensor import (
+    ACCELERATOR_TYPE,
     DTensorTestBase,
     skip_if_lt_x_gpu,
     with_comms,
 )
 
 
-device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 
 
 class TestShardUtilsDistributed(FSDPTest):

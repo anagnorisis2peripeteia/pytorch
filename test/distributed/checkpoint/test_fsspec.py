@@ -25,12 +25,13 @@ from torch.testing._internal.common_distributed import (
 )
 from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.distributed._shard.sharded_tensor import (
+    ACCELERATOR_TYPE,
     ShardedTensorTestBase,
     with_comms,
 )
 
 
-device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+device_type = ACCELERATOR_TYPE.value or "cpu"
 BACKEND = torch.distributed.get_default_backend_for_device(device_type)
 
 
