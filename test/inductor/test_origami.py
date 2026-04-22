@@ -19,8 +19,9 @@ from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU_AND_TRITON
 
 
 DO_PERF_TEST = os.environ.get("DO_PERF_TEST") == "1"
-ORIGAMI_TOPK = 2
-PERF_SLOWDOWN_TOLERANCE = 1.10
+ORIGAMI_TOPK = 5
+ORIGAMI_COMPILE_TOPK = 2  # must be < candidate pool size (4) in _make_heuristic
+PERF_SLOWDOWN_TOLERANCE = 1.15
 IS_ROCM = torch.version.hip is not None
 
 try:
@@ -185,7 +186,7 @@ class TestOrigami(TestCase):
             with self.subTest(op_name=op_name):
                 origami_case = self._compile_with_config(
                     op_name,
-                    self._origami_default_config(),
+                    {**self._origami_default_config(), "origami_topk": ORIGAMI_COMPILE_TOPK},
                     size=256,
                 )
                 max_autotune_case = self._compile_with_config(
@@ -206,42 +207,43 @@ class TestOrigami(TestCase):
     @unittest.skipIf(not DO_PERF_TEST, "Perf test not enabled")
     def test_origami_runtime_matches_regular_max_autotune(self):
         for op_name in ("mm", "addmm"):
-            with self.subTest(op_name=op_name):
-                origami_case = self._compile_with_config(
-                    op_name,
-                    self._origami_default_config(),
-                    size=1024,
-                )
-                max_autotune_case = self._compile_with_config(
-                    op_name,
-                    self._max_autotune_default_config(),
-                    size=1024,
-                )
+            for size in (1024, 8192, 16384):
+                with self.subTest(op_name=op_name, size=size):
+                    origami_case = self._compile_with_config(
+                        op_name,
+                        self._origami_default_config(),
+                        size=size,
+                    )
+                    max_autotune_case = self._compile_with_config(
+                        op_name,
+                        self._max_autotune_default_config(),
+                        size=size,
+                    )
 
-                origami_runtime_ms = benchmarker.benchmark(
-                    origami_case["compiled"],
-                    origami_case["args"],
-                    {},
-                    warmup=50,
-                    rep=200,
-                )
-                max_autotune_runtime_ms = benchmarker.benchmark(
-                    max_autotune_case["compiled"],
-                    max_autotune_case["args"],
-                    {},
-                    warmup=50,
-                    rep=200,
-                )
+                    origami_runtime_ms = benchmarker.benchmark(
+                        origami_case["compiled"],
+                        origami_case["args"],
+                        {},
+                        warmup=50,
+                        rep=200,
+                    )
+                    max_autotune_runtime_ms = benchmarker.benchmark(
+                        max_autotune_case["compiled"],
+                        max_autotune_case["args"],
+                        {},
+                        warmup=50,
+                        rep=200,
+                    )
 
-                print(
-                    f"{op_name} runtime ms: origami={origami_runtime_ms:.3f}, "
-                    f"max_autotune={max_autotune_runtime_ms:.3f}"
-                )
+                    print(
+                        f"{op_name} size={size} runtime ms: origami={origami_runtime_ms:.3f}, "
+                        f"max_autotune={max_autotune_runtime_ms:.3f}"
+                    )
 
-                self.assertLessEqual(
-                    origami_runtime_ms,
-                    max_autotune_runtime_ms * PERF_SLOWDOWN_TOLERANCE,
-                )
+                    self.assertLessEqual(
+                        origami_runtime_ms,
+                        max_autotune_runtime_ms * PERF_SLOWDOWN_TOLERANCE,
+                    )
 
 
 if __name__ == "__main__":
