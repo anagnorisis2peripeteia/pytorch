@@ -60,6 +60,14 @@ _GEMM_TEMPLATE_SYMBOL_NAMES = OrderedSet(
 )
 
 
+# Threshold above which we skip sympy reasoning that scales poorly in the
+# number of symbols. Past this point, polynomial-domain conversions inside
+# sympy (e.g. gcd, Mod) dominate compile time on wide concat/sum expressions
+# (see https://github.com/sympy/sympy/issues/28200). Chosen empirically from
+# AOT-partitioned bwd graphs with ~60-variable shape expressions.
+_MAX_FREE_SYMBOLS_FOR_STATIC_REASONING = 20
+
+
 def statically_known_true(
     shape_env: ShapeEnv,
     expr: sympy.Basic | bool,
@@ -217,6 +225,13 @@ class SizeVarAllocator:
         def remove_zero_terms(base, divisor):
             """Symbols smaller than the divisor are zero"""
             if not statically_known(base >= 0):
+                return base
+
+            # Loop cost is O(symbols * match_cost), and each iteration calls
+            # sympy.gcd whose polynomial-gcd path explodes on many-variable
+            # expressions (e.g. 60-way concat sums in aot-partitioned bwd
+            # graphs). Skip the whole optimization past a threshold.
+            if len(base.free_symbols) > _MAX_FREE_SYMBOLS_FOR_STATIC_REASONING:
                 return base
 
             for v in base.free_symbols:
@@ -429,7 +444,6 @@ class SizeVarAllocator:
             for factor in numerator.args:
                 if self._is_multiple_of(factor, denominator):
                     return True
-            # Also check if combined constant factors are divisible
             const = 1
             for factor in numerator.args:
                 if isinstance(factor, (int, sympy.Integer)):
@@ -458,7 +472,16 @@ class SizeVarAllocator:
             ):
                 return True
 
-        # Rule 6 — axiom fallback: ask ShapeEnv
+        # Rule 6 — cheap gcd check before expensive sympy fallback.
+        from torch.utils._sympy.functions import simple_floordiv_gcd
+
+        gcd = simple_floordiv_gcd(numerator, sympy.Integer(denominator))
+        if isinstance(gcd, (int, sympy.Integer)) and int(gcd) % denominator == 0:
+            return True
+
+        # Rule 7 — full sympy fallback (expensive on many-variable exprs).
+        if len(free_symbols(numerator)) > _MAX_FREE_SYMBOLS_FOR_STATIC_REASONING:
+            return False
         expr = sympy.Eq(Mod(numerator, denominator), 0)
         return self.statically_known_true(expr)
 
@@ -468,16 +491,15 @@ class SizeVarAllocator:
         """
         Return a bool indicating if it is sound to optimize for the numerator being a multiple of the denominator.
         """
-        # The reason we skip compute here is to avoid the cost of trying to eval this symbolically.
-        # see https://github.com/sympy/sympy/issues/28200
-
-        if len(free_symbols(numerator)) > 20:
-            return False
+        if numerator is denominator or numerator == denominator:
+            return True
 
         if isinstance(denominator, (int, sympy.Integer)):
             return self._is_multiple_of(numerator, int(denominator))
 
-        # For symbolic denominators, fall back to direct sympy check
+        # Symbolic denominator: only the sympy fallback can prove this.
+        if len(free_symbols(numerator)) > _MAX_FREE_SYMBOLS_FOR_STATIC_REASONING:
+            return False
         expr = sympy.Eq(Mod(numerator, denominator), 0)
         return self.statically_known_true(expr)  # type: ignore[arg-type]
 
