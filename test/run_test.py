@@ -1835,6 +1835,8 @@ def get_selected_tests(options) -> list[str]:
                     "test_matmul_cuda",
                     "functorch/test_ops",
                     "test_scaled_matmul_cuda",
+                    # New Cuda Test failing on Windows RTX runners
+                    "cpp/cuda_event_test"
                 ]
             )
 
