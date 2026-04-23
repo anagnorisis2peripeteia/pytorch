@@ -690,6 +690,64 @@ class TestPrecomputedSizeHinting(InductorTestCase):
         self.assertEqual(hint, 53)
 
 
+class TestHintDisproves(InductorTestCase):
+    """Tests for hint_disproves_expr fast-path in statically_known_true."""
+
+    def test_hint_disproves_false_claim(self):
+        """If the hint says the expression is False, statically_known_true
+        should return False without expensive sympy reasoning."""
+        from torch.fx.experimental.symbolic_shapes import hint_disproves_expr
+
+        sizevars = SizeVarAllocator()
+        s0 = sizevars.shape_env.create_symbol(10, source=ConstantSource("s0"))
+        sizevars.backed_var_to_val[s0] = sympy.Integer(10)
+
+        # s0 < 5 is False when s0=10, so statically_known_true should return False
+        expr = s0 < 5
+        self.assertTrue(hint_disproves_expr(sizevars.shape_env, expr, target=True))
+        self.assertFalse(sizevars.statically_known_true(expr))
+
+    def test_hint_does_not_prove_true_claim(self):
+        """If the hint says True, we can't conclude universality —
+        hint_disproves_expr should return False (not disproved)."""
+        from torch.fx.experimental.symbolic_shapes import hint_disproves_expr
+
+        sizevars = SizeVarAllocator()
+        s0 = sizevars.shape_env.create_symbol(10, source=ConstantSource("s0"))
+        sizevars.backed_var_to_val[s0] = sympy.Integer(10)
+
+        # s0 > 5 is True when s0=10, but that doesn't prove it universally
+        expr = s0 > 5
+        self.assertFalse(hint_disproves_expr(sizevars.shape_env, expr, target=True))
+
+    def test_hint_disproves_statically_known_false(self):
+        """statically_known_false should return False when hint says True."""
+        from torch.fx.experimental.symbolic_shapes import hint_disproves_expr
+
+        sizevars = SizeVarAllocator()
+        s0 = sizevars.shape_env.create_symbol(10, source=ConstantSource("s0"))
+        sizevars.backed_var_to_val[s0] = sympy.Integer(10)
+
+        # s0 > 5 is True when s0=10, so it's not universally False
+        expr = s0 > 5
+        self.assertTrue(hint_disproves_expr(sizevars.shape_env, expr, target=False))
+
+    def test_hint_disproves_with_complex_expr(self):
+        """hint_disproves_expr works on multi-symbol expressions."""
+        from torch.fx.experimental.symbolic_shapes import hint_disproves_expr
+
+        sizevars = SizeVarAllocator()
+        s0 = sizevars.shape_env.create_symbol(160, source=ConstantSource("s0"))
+        s1 = sizevars.shape_env.create_symbol(200, source=ConstantSource("s1"))
+        sizevars.backed_var_to_val[s0] = sympy.Integer(160)
+        sizevars.backed_var_to_val[s1] = sympy.Integer(200)
+
+        # (s0 + s1) < 100 is False when s0=160, s1=200 (sum=360)
+        expr = (s0 + s1) < 100
+        self.assertTrue(hint_disproves_expr(sizevars.shape_env, expr, target=True))
+        self.assertFalse(sizevars.statically_known_true(expr))
+
+
 class TestWideExpressionThresholds(InductorTestCase):
     """Verify that safe_gcd / free-symbols thresholds only affect WIDE
     expressions.  Small expressions must still get full simplification."""

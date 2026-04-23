@@ -17,6 +17,7 @@ from torch.fx.experimental._size_hinting import (
 from torch.fx.experimental.symbolic_shapes import (
     free_symbols,
     free_unbacked_symbols,
+    hint_disproves_expr,
     IterateExprs,
     ShapeEnv,
     SymNode,
@@ -76,6 +77,13 @@ def statically_known_true(
 ) -> bool:
     if expr in (True, False):
         return bool(expr)
+
+    # Hint fast-path: if the current concrete hints make `expr` evaluate to
+    # False, it cannot be universally True, so bail out without running the
+    # much more expensive `_maybe_evaluate_static`. (A True hint doesn't let
+    # us conclude universal truth, so we still fall through in that case.)
+    if hint_disproves_expr(shape_env, expr, target=True):
+        return False
 
     try:
         simplified = shape_env._maybe_evaluate_static(

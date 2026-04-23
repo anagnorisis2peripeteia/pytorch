@@ -1588,6 +1588,34 @@ def _static_eval_sym_bool(x: SymBool) -> bool | None:
         return None
 
 
+def hint_disproves_expr(shape_env: ShapeEnv, expr: sympy.Basic, target: bool) -> bool:
+    """
+    Cheap check: substitute backed-symbol hints into ``expr`` and see if the
+    concrete result is the opposite of ``target``.  If so, a static claim
+    that the expression is always ``target`` cannot be true — the caller can
+    return False without invoking expensive sympy reasoning.
+
+    If the hint *matches* ``target``, we cannot conclude universality, so the
+    caller must fall through to full reasoning.
+
+    The try/except is defensive: xreplace can fail on edge-case expressions
+    (e.g. type mismatches in substitution), and since this is a pure
+    fast-path optimisation we just fall through on any error.
+    """
+    try:
+        subs = shape_env.backed_var_to_val
+        if not subs:
+            return False
+        hinted = expr.xreplace(subs)
+        if hinted is sympy.S.true:
+            return target is False
+        if hinted is sympy.S.false:
+            return target is True
+    except Exception:
+        pass
+    return False
+
+
 def statically_known_false(x: BoolLikeType) -> bool:
     """
     Returns True if x can be simplified to a constant and is False.
@@ -1604,6 +1632,10 @@ def statically_known_false(x: BoolLikeType) -> bool:
         if not isinstance(x, bool):
             raise AssertionError(f"Expected bool, got {type(x)}")
         return not x
+
+    # Fast path: if the hint says True, expression is not universally False.
+    if hint_disproves_expr(x.node.shape_env, x.node.expr, target=False):
+        return False
 
     result = _static_eval_sym_bool(x)
     if result is None:
@@ -1627,6 +1659,9 @@ def statically_known_true(x: BoolLikeType) -> bool:
         if not isinstance(x, bool):
             raise AssertionError(f"Expected bool, got {type(x)}")
         return x
+    # Fast path: if the hint says False, expression is not universally True.
+    if hint_disproves_expr(x.node.shape_env, x.node.expr, target=True):
+        return False
     result = _static_eval_sym_bool(x)
     if result is None:
         return False
