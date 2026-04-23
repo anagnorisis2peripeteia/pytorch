@@ -7271,6 +7271,25 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
         res = torch.compile(f, backend="aot_eager")()
         self.assertEqual(ref, res)
 
+    def test_guard_tag_safe_tensor_metadata_segfault(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/180741
+        # The recursive dict-tag optimization stashes raw PyObject* tensor
+        # pointers during guard recording. GetAttrGuardAccessor creates
+        # temporary new references (PyObject_GetAttr) that get decref'd after
+        # the child guard check, leaving stashed pointers dangling.
+        try:
+            from . import _test_tag_safe_guard_helper as helper
+        except ImportError:
+            import _test_tag_safe_guard_helper as helper
+
+        encoder = helper.Encoder()
+        x = torch.randn(2, 8, 32)
+        lengths = torch.tensor([6, 8])
+
+        compiled = torch.compile(encoder, backend="eager")
+        out = compiled(x, lengths)
+        self.assertEqual(out[0].shape, torch.Size([2, 8, 64]))
+
     def test_deleted_compile_wrapper_segfault(self):
         def fn(x):
             return x + 1
