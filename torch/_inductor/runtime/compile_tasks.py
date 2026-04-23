@@ -114,6 +114,41 @@ def _set_triton_libdevice_path_impl() -> None:
         )
 
 
+def _worker_compile_pycodecache_kernel(
+    kernel_name: str,
+    source_code: str,
+    main_suffix: str,
+    extra_env: dict[str, str],
+) -> tuple[str, str, int]:
+    """
+    Subprocess worker for PyCodeCache-based kernel compilation (CuteDSL, NV Universal GEMM).
+
+    Writes source to PyCodeCache and loads the module, triggering compilation
+    (e.g. MLIR via @cute.kernel/@cute.jit). Returns (key, path, elapsed_us)
+    so the parent can reload the module cheaply from warmed caches.
+    """
+    os.environ.update(extra_env)
+
+    start_ns = time.time_ns()
+
+    import torch._inductor.codecache as codecache
+
+    key, path = codecache.PyCodeCache.write(source_code)
+    mod = codecache.PyCodeCache.load_by_key_path(key, path)
+
+    main_func_name = f"{kernel_name}_{main_suffix}"
+    if not hasattr(mod, main_func_name):
+        available = [name for name in dir(mod) if callable(getattr(mod, name))]
+        raise RuntimeError(
+            f"Could not find kernel function '{main_func_name}'. "
+            f"Available callables: {available}"
+        )
+
+    elapsed_ns = time.time_ns() - start_ns
+    linecache.clearcache()
+    return key, path, elapsed_ns // 1000
+
+
 def _worker_compile_triton(
     load_kernel: Callable[[], CachingAutotuner],
     extra_env: dict[str, str],
