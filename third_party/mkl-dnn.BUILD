@@ -8,7 +8,6 @@ _DNNL_RUNTIME_OMP = {
     "#cmakedefine DNNL_GPU_VENDOR DNNL_VENDOR_${DNNL_GPU_VENDOR}": "/* undef DNNL_GPU_VENDOR */",
     "#cmakedefine DNNL_USE_RT_OBJECTS_IN_PRIMITIVE_CACHE": "/* undef DNNL_USE_RT_OBJECTS_IN_PRIMITIVE_CACHE */",
     "#cmakedefine DNNL_WITH_SYCL": "/* #undef DNNL_WITH_SYCL */",
-    "#cmakedefine DNNL_WITH_LEVEL_ZERO": "/* #undef DNNL_WITH_LEVEL_ZERO */",
     "#cmakedefine DNNL_SYCL_CUDA": "/* #undef DNNL_SYCL_CUDA */",
     "#cmakedefine DNNL_SYCL_HIP": "/* #undef DNNL_SYCL_HIP */",
     "#cmakedefine DNNL_SYCL_GENERIC": "/* #undef DNNL_SYCL_GENERIC */",
@@ -20,6 +19,7 @@ _DNNL_RUNTIME_OMP = {
     "#cmakedefine DNNL_EXPERIMENTAL_LOGGING": "#undef DNNL_EXPERIMENTAL_LOGGING",
     "#cmakedefine DNNL_SAFE_RBP": "#undef DNNL_SAFE_RBP",
     "#cmakedefine DNNL_EXPERIMENTAL_SYCL_KERNEL_COMPILER": "#undef DNNL_EXPERIMENTAL_SYCL_KERNEL_COMPILER",
+    "#cmakedefine DNNL_EXPERIMENTAL_GROUPED_MEMORY": "#undef DNNL_EXPERIMENTAL_GROUPED_MEMORY",
     "#cmakedefine DNNL_DISABLE_GPU_REF_KERNELS": "#undef DNNL_DISABLE_GPU_REF_KERNELS",
     "#cmakedefine01 BUILD_TRAINING": "#define BUILD_TRAINING 1",
     "#cmakedefine01 BUILD_INFERENCE": "#define BUILD_INFERENCE 0",
@@ -30,6 +30,7 @@ _DNNL_RUNTIME_OMP = {
     "#cmakedefine01 BUILD_CONVOLUTION": "#define BUILD_CONVOLUTION 0",
     "#cmakedefine01 BUILD_DECONVOLUTION": "#define BUILD_DECONVOLUTION 0",
     "#cmakedefine01 BUILD_ELTWISE": "#define BUILD_ELTWISE 0",
+    "#cmakedefine01 BUILD_GATED_MLP": "#define BUILD_GATED_MLP 0",
     "#cmakedefine01 BUILD_GROUP_NORMALIZATION": "#define BUILD_GROUP_NORMALIZATION 0",
     "#cmakedefine01 BUILD_INNER_PRODUCT": "#define BUILD_INNER_PRODUCT 0",
     "#cmakedefine01 BUILD_LAYER_NORMALIZATION": "#define BUILD_LAYER_NORMALIZATION 0",
@@ -57,6 +58,7 @@ _DNNL_RUNTIME_OMP = {
     "#cmakedefine01 BUILD_XEHP": "#define BUILD_XEHP 0",
     "#cmakedefine01 BUILD_XE2": "#define BUILD_XE2 0",
     "#cmakedefine01 BUILD_XE3": "#define BUILD_XE3 0",
+    "#cmakedefine01 BUILD_XE3P": "#define BUILD_XE3P 0",
     "#cmakedefine01 BUILD_GEMM_KERNELS_ALL": "#define BUILD_GEMM_KERNELS_ALL 0",
     "#cmakedefine01 BUILD_GEMM_KERNELS_NONE": "#define BUILD_GEMM_KERNELS_NONE 0",
     "#cmakedefine01 BUILD_GEMM_SSE41": "#define BUILD_GEMM_SSE41 0",
@@ -70,8 +72,8 @@ template_rule(
     out = "include/oneapi/dnnl/dnnl_version.h",
     substitutions = {
         "@DNNL_VERSION_MAJOR@": "3",
-        "@DNNL_VERSION_MINOR@": "11",
-        "@DNNL_VERSION_PATCH@": "2",
+        "@DNNL_VERSION_MINOR@": "12",
+        "@DNNL_VERSION_PATCH@": "0",
     },
 )
 
@@ -86,7 +88,7 @@ template_rule(
     name = "include_dnnl_version_hash",
     src = "include/oneapi/dnnl/dnnl_version_hash.h.in",
     out = "include/oneapi/dnnl/dnnl_version_hash.h",
-    substitutions = {"@DNNL_VERSION_HASH@": "03c022d3ffdcee958cfacbe720048e725fdf644c",}
+    substitutions = {"@DNNL_VERSION_HASH@": "5f1ac51059fa16c08a64e54b1cb5408f32e54d51",}
 )
 
 cc_library(
