@@ -3,6 +3,7 @@
 import contextlib
 import json
 import math
+import re
 import itertools
 import tempfile
 import unittest
@@ -51,6 +52,7 @@ from torch.testing._internal.common_utils import (
     run_tests,
     runOnRocmArch,
     skipIfRocm,
+    skipIfTorchDynamo,
     TEST_CUDA,
     TestCase,
     skipIfXpu,
@@ -1186,88 +1188,78 @@ class TestFP8Matmul(TestCase):
             out_fp8.to(torch.float32), torch.full((M, N), K * (fill_value**2), device=device)
         )
 
-    # The regexes accept both the eager (C++ op) message and the v2 meta
-    # `torch._check` message, which differ in wording and exception type.
+    @skipIfTorchDynamo
     @onlyOn(["cuda", "xpu", "cpu"])
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8 or IS_WINDOWS, f8_msg)
-    @parametrize(
-        "error_case",
-        [
-            (
-                "tensorwise_scale_b_numel",
-                lambda M, N, dev: torch.ones((1, 1), device=dev),
-                lambda M, N, dev: torch.ones((1, 2), device=dev),
-                ScalingType.TensorWise,
-                ScalingType.TensorWise,
-                (ValueError, RuntimeError),
-                (r"scale_b must have 1 Float element"
-                 r"|For Tensorwise scaling, both scale_a and scale_b must be single element float"),
-            ),
-            (
-                "rowwise_scale_b_extra",
-                lambda M, N, dev: torch.ones((M, 1), device=dev),
-                lambda M, N, dev: torch.ones((1, N + 1), device=dev),
-                ScalingType.RowWise,
-                ScalingType.RowWise,
-                (ValueError, RuntimeError),
-                (r"scale_b must have \d+ Float elements, got \d+"
-                 r"|For Rowwise scaling, scale_a must have \d+ elements"),
-            ),
-            (
-                "rowwise_scale_a_dim",
-                lambda M, N, dev: torch.ones((M,), device=dev),
-                lambda M, N, dev: torch.ones((N, 1), device=dev),
-                ScalingType.RowWise,
-                ScalingType.RowWise,
-                (IndexError, RuntimeError),
-                r"Dimension out of range|For Rowwise scaling, scale_a must have",
-            ),
-            (
-                "rowwise_scale_b_stride",
-                lambda M, N, dev: torch.ones((M, 1), device=dev),
-                lambda M, N, dev: torch.ones((1, N * 2), device=dev)[:, ::2],
-                ScalingType.RowWise,
-                ScalingType.RowWise,
-                (ValueError, RuntimeError),
-                r"expected scale_b\.stride\(1\) to be 1, but got 2",
-            ),
-        ],
-        name_fn=lambda case: case[0],
-    )
-    def test_float8_error_messages(self, device, error_case) -> None:
-        _, scale_a_builder, scale_b_builder, recipe_a, recipe_b, err_type, err_regex = error_case
+    def test_float8_error_messages(self, device) -> None:
         M, K, N = (1024, 512, 2048)
         fill_value = 0.5
-        x_fp8 = torch.full((M, K), fill_value, device=device).to(e4m3_type)
-        y_fp8 = torch.full((N, K), fill_value, device=device).to(e4m3_type).t()
+        x = torch.full((M, K), fill_value, device=device)
+        y = torch.full((N, K), fill_value, device=device)
 
-        with self.assertRaisesRegex(err_type, err_regex):
+        x_fp8 = x.to(e4m3_type)
+        y_fp8 = y.to(e4m3_type).t()
+
+        with self.assertRaisesRegex(
+            ValueError, re.escape("scale_b must have 1 Float element")
+        ):
             scaled_mm_wrap(
                 x_fp8,
                 y_fp8,
-                scale_a=scale_a_builder(M, N, device),
-                scale_b=scale_b_builder(M, N, device),
-                scale_recipe_a=recipe_a,
-                scale_recipe_b=recipe_b,
+                scale_a=torch.ones((1, 1), device=device),
+                scale_b=torch.ones((1, 2), device=device),
+                scale_recipe_a=ScalingType.TensorWise,
+                scale_recipe_b=ScalingType.TensorWise,
                 out_dtype=torch.bfloat16,
             )
 
-    @onlyOn(["cuda", "xpu", "cpu"])
-    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8 or IS_WINDOWS, f8_msg)
-    def test_float8_e5m2_mixed_dtypes(self, device) -> None:
-        M, K, N = (1024, 512, 2048)
-        fill_value = 0.5
-        x_fp8 = torch.full((M, K), fill_value, device=device).to(e4m3_type)
-        y_fp8 = torch.full((N, K), fill_value, device=device).to(e4m3_type).t()
+        with self.assertRaisesRegex(
+            ValueError, re.escape(f"scale_b must have {N} Float elements, got {N + 1}"),
+        ):
+            scaled_mm_wrap(
+                x_fp8,
+                y_fp8,
+                scale_a=torch.ones((M, 1), device=device),
+                scale_b=torch.ones((1, N + 1), device=device),
+                scale_recipe_a=ScalingType.RowWise,
+                scale_recipe_b=ScalingType.RowWise,
+                out_dtype=torch.bfloat16,
+            )
+        with self.assertRaisesRegex(
+            IndexError, re.escape("Dimension out of range")
+        ):
+            scaled_mm_wrap(
+                x_fp8,
+                y_fp8,
+                scale_a=torch.ones((M), device=device),
+                scale_b=torch.ones((N, 1), device=device),
+                scale_recipe_a=ScalingType.RowWise,
+                scale_recipe_b=ScalingType.RowWise,
+                out_dtype=torch.bfloat16,
+            )
+
+        with self.assertRaisesRegex(
+            ValueError, re.escape("expected scale_b.stride(1) to be 1, but got 2"),
+        ):
+            scaled_mm_wrap(
+                x_fp8,
+                y_fp8,
+                scale_a=torch.ones((M, 1), device=device),
+                scale_b=torch.ones((1, N * 2), device=device)[:, ::2],
+                scale_recipe_a=ScalingType.RowWise,
+                scale_recipe_b=ScalingType.RowWise,
+                out_dtype=torch.bfloat16,
+            )
 
         def e5m2():
-            return scaled_mm_wrap(
+            out = scaled_mm_wrap(
                 x_fp8,
                 y_fp8.to(e5m2_type),
                 scale_a=torch.ones((M, 1), device=device),
                 scale_b=torch.ones((1, N), device=device),
                 out_dtype=torch.bfloat16,
             )
+            return out
 
         if (torch.xpu.is_available() or
             (torch.cuda.is_available() and
