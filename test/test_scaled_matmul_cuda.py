@@ -2627,7 +2627,9 @@ class TestFP8Matmul(TestCase):
                 output_dtype=torch.bfloat16,
             )
 
-        torch.compile(fn, fullgraph=True)(a, b, scale_a, scale_b)
+        expected = fn(a, b, scale_a, scale_b)
+        actual = torch.compile(fn, fullgraph=True)(a, b, scale_a, scale_b)
+        self.assertEqual(actual, expected)
 
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8_GROUPED_GEMM, f8_grouped_msg)
@@ -2651,7 +2653,9 @@ class TestFP8Matmul(TestCase):
                 output_dtype=torch.bfloat16,
             )
 
-        torch.compile(fn, fullgraph=True)(a, b, scale_a, scale_b, offs)
+        expected = fn(a, b, scale_a, scale_b, offs)
+        actual = torch.compile(fn, fullgraph=True)(a, b, scale_a, scale_b, offs)
+        self.assertEqual(actual, expected)
 
 
 instantiate_device_type_tests(TestFP8Matmul, globals(), allow_xpu=True)
