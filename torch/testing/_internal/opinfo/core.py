@@ -740,6 +740,10 @@ class OpInfo:
     # dtypesIf = { 'cuda': (torch.float, torch.double), 'rocm': (torch.half, torch.bfloat16) }
     dtypesIf: dict[str, _dispatch_dtypes] = field(default_factory=dict)
 
+    # DSL backend name for DSL-optimized implementations (e.g., 'triton', 'cutedsl')
+    # None for regular (non-DSL) OpInfos
+    dsl_name: str | None = None
+
     def __getattribute__(self, name: str) -> Any:
         if name.startswith("dtypesIf") and name != "dtypesIf":
             # TODO: Warn if used
