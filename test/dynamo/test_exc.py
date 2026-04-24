@@ -41,9 +41,53 @@ def _capture_y_source_location(ctx) -> None:
         _source_location_capture["source_location"] = y_vt.source_location
 
 
-def _munge_with_marker_indentation_removed(message: str) -> str:
+def _strip_source_markers(message: str) -> str:
+    return re.sub(r"\n[ ]*[~^]+\n", "\n", message)
+
+
+def _unsupported_error_source_attribution() -> str:
+    if sys.version_info < (3, 11):
+        return """\
+Stack variable source attribution:
+  ConstantVariable(int: 1) originated from:
+  File "test_exc.py", line N
+                return {1, 2}
+"""
+
+    return """\
+Stack variable source attribution:
+  ConstantVariable(int: 1) originated from:
+  File "test_exc.py", line N
+                return {1, 2}
+  ConstantVariable(int: 2) originated from:
+  File "test_exc.py", line N
+                return {1, 2}
+"""
+
+
+def _munge_with_source_markers_removed(message: str) -> str:
     munged = munge_exc(message, suppress_suffix=True, skip=0)
-    return re.sub(r"^[ ]+([~^]+)$", r"\1", munged, flags=re.MULTILINE)
+    return _strip_source_markers(munged)
+
+
+def _format_multiline_source_location() -> str:
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as source_file:
+        source_file.write("value = (\n    foo\n    + bar\n)\n")
+        source_path = source_file.name
+
+    try:
+        source_location = SourceLocation(
+            filename=source_path,
+            lineno=1,
+            end_lineno=4,
+            # Span covers the parenthesized expression `( ... )`.
+            col_offset=8,
+            end_col_offset=1,
+        )
+        return source_location.format().replace(source_path, "<source_path>")
+    finally:
+        os.unlink(source_path)
+        linecache.clearcache()
 
 
 class ExcTests(LoggingTestCase):
@@ -170,7 +214,6 @@ from user code:
 
     @torch._dynamo.config.patch(inject_BUILD_SET_unimplemented_TESTING_ONLY=True)
     @make_logging_test(graph_breaks=True)
-    @unittest.skipUnless(sys.version_info[:2] == (3, 14), "requires Python 3.14")
     def test_unsupported_error(self, records):
         def fn001(x):
             return {1, 2}
@@ -178,8 +221,7 @@ from user code:
         torch.compile(fn001, backend="eager")(torch.randn(1))
 
         record = self.getRecord(records, "missing BUILD_SET handler")
-        self.assertExpectedInline(
-            _munge_with_marker_indentation_removed(record.getMessage()),
+        expected = (
             """\
 Graph break in user code at test_exc.py:N
 Graph Break Reason: Failed to handle graph break gracefully. Skipping the function and falling back to eager. Graph break encountered:
@@ -192,22 +234,19 @@ missing BUILD_SET handler
 
  For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0200.html
 
-Stack variable source attribution:
-  ConstantVariable(int: 1) originated from:
-  File "test_exc.py", line N
-                return {1, 2}
-^
-  ConstantVariable(int: 2) originated from:
-  File "test_exc.py", line N
-                return {1, 2}
-^
-
+"""
+            + _unsupported_error_source_attribution()
+            + """
 User code traceback:
   File "test_exc.py", line N, in test_unsupported_error
     torch.compile(fn001, backend="eager")(torch.randn(1))
   File "test_exc.py", line N, in fn001
     return {1, 2}
-""",
+"""
+        )
+        self.assertExpectedInline(
+            _munge_with_source_markers_removed(record.getMessage()),
+            expected,
         )
 
     @torch._dynamo.config.patch(suppress_errors=False)
@@ -464,31 +503,23 @@ Failed Source Expressions:
         result = source_location.format()
         self.assertEqual(result, '  File "<string>", line 1\n')
 
-    @unittest.skipUnless(sys.version_info[:2] == (3, 14), "requires Python 3.14")
     def test_source_location_format_multiline(self):
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".py", delete=False
-        ) as source_file:
-            source_file.write("value = (\n    foo\n    + bar\n)\n")
-            source_path = source_file.name
-
-        try:
-            source_location = SourceLocation(
-                filename=source_path,
-                lineno=1,
-                end_lineno=4,
-                # Span covers the parenthesized expression `( ... )`.
-                col_offset=8,
-                end_col_offset=1,
-            )
-            result = source_location.format().replace(source_path, "<source_path>")
-        finally:
-            os.unlink(source_path)
-            linecache.clearcache()
+        result = _format_multiline_source_location()
 
         self.assertExpectedInline(
-            result,
+            _strip_source_markers(result),
             """\
+  File "<source_path>", line 1
+    value = (
+        foo
+        + bar
+    )
+""",
+        )
+
+        if sys.version_info >= (3, 11):
+            if sys.version_info >= (3, 13):
+                expected = """\
   File "<source_path>", line 1
     value = (
             ~
@@ -498,8 +529,20 @@ Failed Source Expressions:
         ^~~~~
     )
     ~
-""",
-        )
+"""
+            else:
+                expected = """\
+  File "<source_path>", line 1
+    value = (
+            ^
+        foo
+        ^^^
+        + bar
+        ^^^^^
+    )
+    ^
+"""
+            self.assertExpectedInline(result, expected)
 
     def test_vt_source_location_set_during_tracing(self):
         _source_location_capture.clear()
