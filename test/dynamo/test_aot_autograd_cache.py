@@ -346,8 +346,8 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
             eager_result = fn(a, b)
             compiled_result = compiled_fn(a, b)
             compiled_result.sum().backward()
-            if hasattr(a, "_dynamo_weak_dynamic_indices"):
-                del a._dynamo_weak_dynamic_indices
+            if hasattr(a, "_dynamo_propagated_dynamic_indices"):
+                del a._dynamo_propagated_dynamic_indices
             self.assertEqual(eager_result, compiled_result)
             if functorch_config.bundled_autograd_cache:
                 self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 0)
@@ -388,8 +388,8 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
             compiled_result = compiled_fn(a, b)
             self.assertEqual(eager_result, compiled_result)
             compiled_result.sum().backward()
-            if hasattr(a, "_dynamo_weak_dynamic_indices"):
-                del a._dynamo_weak_dynamic_indices
+            if hasattr(a, "_dynamo_propagated_dynamic_indices"):
+                del a._dynamo_propagated_dynamic_indices
             if functorch_config.bundled_autograd_cache:
                 self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 0)
                 self.assertEqual(counters["inductor"]["fxgraph_cache_hit"], 0)
@@ -421,8 +421,8 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
             eager_result = fn(a, b)
             compiled_result = compiled_fn(a, b)
             compiled_result.sum().backward()
-            if hasattr(a, "_dynamo_weak_dynamic_indices"):
-                del a._dynamo_weak_dynamic_indices
+            if hasattr(a, "_dynamo_propagated_dynamic_indices"):
+                del a._dynamo_propagated_dynamic_indices
             self.assertEqual(eager_result, compiled_result)
             if functorch_config.bundled_autograd_cache:
                 self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 0)
@@ -1914,6 +1914,31 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
             self.assertNotEqual(res1, res3)
             self.assertEqual(res1, res3.sub(torch.ones(2, 2)))
 
+    @unittest.skipIf(not HAS_GPU, "requires GPU")
+    @inductor_config.patch("fx_graph_cache", True)
+    @inductor_config.patch("fx_graph_remote_cache", False)
+    @inductor_config.patch("always_keep_tensor_constants", True)
+    @functorch_config.patch(
+        {
+            "enable_autograd_cache": True,
+            "strict_autograd_cache": True,
+            "bundled_autograd_cache": True,
+        }
+    )
+    def test_tensor_constant(self):
+        """Bundled AOT cache serialization with strict_autograd_cache should
+        succeed when the compiled graph contains tensor constants."""
+
+        def fn(x):
+            idx = torch.tensor([], dtype=torch.long, device=x.device)
+            return x[idx]
+
+        compiled_fn = torch.compile(fn, backend="inductor", fullgraph=True)
+        with torch.no_grad():
+            compiled_fn(torch.randn(4, device=GPU_TYPE))
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_saved"], 1)
+
     @requires_cuda_and_triton
     @inductor_config.patch("fx_graph_cache", True)
     @inductor_config.patch("fx_graph_remote_cache", False)
@@ -2195,8 +2220,8 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
                 torch.compile(dynamic=dynamic)
             ):
                 actual_grads = torch.autograd.grad(compiled_result.sum(), inputs=(a, b))
-            if hasattr(a, "_dynamo_weak_dynamic_indices"):
-                del a._dynamo_weak_dynamic_indices
+            if hasattr(a, "_dynamo_propagated_dynamic_indices"):
+                del a._dynamo_propagated_dynamic_indices
             self.assertEqual(eager_result, compiled_result)
             self.assertEqual(expected_grads[0], actual_grads[0])
             self.assertEqual(expected_grads[1], actual_grads[1])
@@ -2257,8 +2282,8 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
                     actual_grads = torch.autograd.grad(
                         compiled_result.sum(), inputs=(a, b)
                     )
-                if hasattr(a, "_dynamo_weak_dynamic_indices"):
-                    del a._dynamo_weak_dynamic_indices
+                if hasattr(a, "_dynamo_propagated_dynamic_indices"):
+                    del a._dynamo_propagated_dynamic_indices
                 self.assertEqual(eager_result, compiled_result)
                 self.assertEqual(expected_grads[0], actual_grads[0])
                 self.assertEqual(expected_grads[1], actual_grads[1])
