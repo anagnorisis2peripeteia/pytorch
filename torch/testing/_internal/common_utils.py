@@ -2801,6 +2801,11 @@ class CudaMemoryLeakCheck:
         if exc_type is not None:
             return
 
+        self.testcase.before_cuda_memory_leak_check()
+        gc.collect()
+        torch._C._cuda_clearCublasWorkspaces()
+        torch.cuda.empty_cache()
+
         # Compares caching allocator before/after statistics
         # An increase in allocated memory is a discrepancy indicating a possible
         #   memory leak
@@ -3404,6 +3409,9 @@ class TestCase(expecttest.TestCase):
     def assertLeaksNoCudaTensors(self, name=None):
         name = self.id() if name is None else name
         return CudaMemoryLeakCheck(self, name)
+
+    def before_cuda_memory_leak_check(self):
+        torch._dynamo.reset()
 
     def enforceNonDefaultStream(self):
         return CudaNonDefaultStream()
@@ -5128,7 +5136,7 @@ def make_fullrank_matrices_with_distinct_singular_values(*shape, device, dtype, 
         # This gives a condition number of 9/4, which should be good enough
         s.reciprocal_().add_(1.)
         # Note that the singular values need not be ordered in an SVD so
-        # we don't need need to sort S
+        # we don't need to sort S
         x = (u * s.to(u.dtype)) @ vh
     x.requires_grad_(requires_grad)
     return x
