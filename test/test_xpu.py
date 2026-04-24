@@ -510,6 +510,7 @@ if __name__ == "__main__":
         t = torch.randn(5, 5, device="xpu")
         result = t.share_memory_()
         self.assertIs(result, t)
+        self.assertTrue(t.is_shared())
 
     def test_share_memory_nested(self):
         a = torch.randn(3, 4, device="xpu")

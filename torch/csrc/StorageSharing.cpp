@@ -627,7 +627,7 @@ static PyObject* THPStorage_sharedFd(PyObject* self, PyObject* noargs) {
 
 static PyObject* THPStorage_isShared(PyObject* self, PyObject* noargs) {
   const auto& storage = THPStorage_Unpack(self);
-  if (storage.device_type() != at::kCPU) {
+  if (storage.device_type() != at::kCPU && storage.device_type() != at::kMeta) {
     Py_RETURN_TRUE;
   }
   if (at::MapAllocator::fromDataPtr(storage.data_ptr()) ||

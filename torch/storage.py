@@ -392,7 +392,7 @@ class _StorageBase:
         """See :meth:`torch.UntypedStorage.share_memory_`"""
         from torch.multiprocessing import get_sharing_strategy
 
-        if self.device.type != "cpu":
+        if self.device.type not in ("cpu", "meta"):
             pass  # only CPU uses POSIX shared memory
         elif get_sharing_strategy() == "file_system":
             self._share_filename_cpu_()
