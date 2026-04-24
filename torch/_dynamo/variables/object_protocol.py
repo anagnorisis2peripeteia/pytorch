@@ -23,6 +23,7 @@ from .. import graph_break_hints, polyfills
 from ..exc import (
     handle_observed_exception,
     ObservedTypeError,
+    ObservedUserStopIteration,
     raise_observed_exception,
     raise_type_error,
     unimplemented,
@@ -403,3 +404,17 @@ def generic_getiter(
         )
     else:
         raise_type_error(tx, f"'{obj.python_type_name()}' object is not iterable")
+
+
+def unpack_iterator(
+    tx: "InstructionTranslator", iterable: VariableTracker
+) -> list[VariableTracker]:
+    items = []
+    iterator = generic_getiter(tx, iterable)
+    while True:
+        try:
+            items.append(generic_iternext(tx, iterator))
+        except ObservedUserStopIteration:
+            handle_observed_exception(tx)
+            break
+    return items
