@@ -1128,6 +1128,13 @@ if(USE_NCCL)
   endif()
 endif()
 
+# ---[ NCCL EP
+if(USE_NCCL_EP)
+  message(STATUS "USE_NCCL_EP is ON")
+  include(${CMAKE_CURRENT_LIST_DIR}/External/nccl_ep.cmake)
+  list(APPEND Caffe2_CUDA_DEPENDENCY_LIBS __caffe2_nccl_ep)
+endif()
+
 # ---[ XCCL
 if(USE_XCCL)
   if(NOT USE_XPU)
