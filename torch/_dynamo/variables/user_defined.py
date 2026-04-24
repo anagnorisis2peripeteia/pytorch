@@ -34,6 +34,7 @@ import sys
 import threading
 import traceback
 import types
+import typing
 import warnings
 import weakref
 from collections.abc import Callable, Iterable, Sequence
@@ -1368,7 +1369,13 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         if isinstance(
             self.value,
-            (enum.Enum, torch.DispatchKey, torch._C._functorch.TransformType),
+            (
+                enum.Enum,
+                torch.DispatchKey,
+                torch._C._functorch.TransformType,
+                typing._BaseGenericAlias,
+                types.GenericAlias,
+            ),
         ) or is_pybind11_enum_member(self.value):
             return self.value
 

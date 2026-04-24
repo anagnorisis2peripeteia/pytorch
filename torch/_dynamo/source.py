@@ -707,6 +707,8 @@ class GetItemSource(ChainedSource):
         assert not isinstance(self.index, Source)
         if self.index_is_slice:
             return f"{{0}}[{_esc_str(self.unpack_slice(), apply_repr=True)}]"
+        elif type(self.index) is type:
+            return f"{{0}}[{_esc_str(self.index.__name__)}]"
         else:
             return f"{{0}}[{_esc_str(self.index, apply_repr=True)}]"
 

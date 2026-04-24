@@ -128,7 +128,7 @@ from .misc import (
     SuperVariable,
     TorchVersionVariable,
     TracebackVariable,
-    TypingVariable,
+    UnionVariable,
     UnknownVariable,
     WeakRefVariable,
 )
