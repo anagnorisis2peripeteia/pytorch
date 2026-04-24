@@ -3077,7 +3077,7 @@ def maybe_handle_decomp(
     decomp_table = CURRENT_DECOMPOSITION_TABLE.get({})
     if op in decomp_table:
         if CompilerBisector.disable_subsystem(
-            "aot_eager_decomp_partition", "decomposition", lambda: repr(op)
+            "aot_eager_decomp_partition", "decomposition", repr(op)
         ):
             return NotImplemented
 

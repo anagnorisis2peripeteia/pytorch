@@ -1843,7 +1843,7 @@ class GraphLowering(torch.fx.Interpreter):
                 and (
                     fallback_node_due_to_unsupported_type(n)
                     or CompilerBisector.disable_subsystem(
-                        "inductor", "lowerings", lambda: repr(n)
+                        "inductor", "lowerings", repr(n)
                     )
                 )
             ):

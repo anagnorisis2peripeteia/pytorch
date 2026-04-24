@@ -73,12 +73,6 @@ BACKENDS: dict[str, list[Subsystem]] = {
 }
 
 subsystem_call_counter: dict[str, int] = collections.Counter()
-call_counter_debug_info: dict[int, str] = {}
-
-
-def reset_counters() -> None:
-    subsystem_call_counter.clear()
-    call_counter_debug_info.clear()
 
 
 @functools.cache
@@ -133,13 +127,34 @@ class CompilerBisector:
     in_process_cache: str | None = None
 
     @classmethod
+    def clear_call_counter_debug_info(
+        cls, backend_name: str, subsystem_name: str | None
+    ) -> None:
+        # subsystem_name == None only happens when clearing a call counter that cannot
+        # otherwise be written to; ignore it.
+        if subsystem_name:
+            file_path = os.path.join(
+                cls.get_dir(),
+                backend_name,
+                f"{subsystem_name}_call_counter_debug_info.txt",
+            )
+            cls.write_lines_to_file(file_path, [])
+
+    @classmethod
+    def reset_counters(cls, backend_name: str, subsystem_name: str | None) -> None:
+        subsystem_call_counter.clear()
+        cls.clear_call_counter_debug_info(backend_name, subsystem_name)
+
+    @classmethod
     def get_dir(cls) -> str:
         return f"{cache_dir() if not cls.in_process_cache else cls.in_process_cache}/{SUBDIR_NAME}"
 
     @classmethod
-    def write_lines_to_file(cls, file_path: str, lines: list[str]) -> None:
+    def write_lines_to_file(
+        cls, file_path: str, lines: list[str], *, append: bool = False
+    ) -> None:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, "w") as file:
+        with open(file_path, "a" if append else "w") as file:
             file.writelines(lines)
 
     @classmethod
@@ -193,6 +208,31 @@ class CompilerBisector:
         cls.write_lines_to_file(file_path, lines)
 
     @classmethod
+    def add_call_counter_debug_info(
+        cls, backend_name: str, subsystem_name: str, call_counter: int, debug_info: str
+    ) -> None:
+        file_path = os.path.join(
+            cls.get_dir(), backend_name, f"{subsystem_name}_call_counter_debug_info.txt"
+        )
+        # This is only called for the last ~2 items in a bisect, so writing duplicate
+        # lines does not have performance implications later.
+        lines = [f"{call_counter}={debug_info}\n"]
+        cls.write_lines_to_file(file_path, lines, append=True)
+
+    @classmethod
+    def get_call_counter_debug_info(
+        cls, backend_name: str, subsystem_name: str, call_counter: int
+    ) -> str | None:
+        file_path = os.path.join(
+            cls.get_dir(), backend_name, f"{subsystem_name}_call_counter_debug_info.txt"
+        )
+        for line in reversed(cls.read_lines_from_file(file_path)):
+            counter_str, debug_info = line.split("=", maxsplit=1)
+            if int(counter_str) == call_counter:
+                return debug_info
+        return None
+
+    @classmethod
     def get_backend(cls) -> str | None:
         """
         Returns the active backend, if any
@@ -221,7 +261,7 @@ class CompilerBisector:
         for line in lines:
             if line.startswith("subsystem="):
                 out = line.strip().split("=")[1]
-                return out if out else None
+                return out or None
         return None
 
     @classmethod
@@ -305,7 +345,7 @@ class CompilerBisector:
     @classmethod
     def delete_bisect_status(cls) -> None:
         # in process_cache we have created if it exists, just the subdirectory of non created dir
-        dir_name = cls.in_process_cache if cls.in_process_cache else cls.get_dir()
+        dir_name = cls.in_process_cache or cls.get_dir()
         if os.path.exists(dir_name):
             shutil.rmtree(dir_name)
             print("Bisection status deleted.")
@@ -325,7 +365,7 @@ class CompilerBisector:
         cls,
         backend: str,
         subsystem: str,
-        debug_info: Callable[[], str] | None = None,
+        debug_info: str | None = None,
     ) -> bool:
         if not cls.bisection_enabled:
             return False
@@ -364,10 +404,12 @@ class CompilerBisector:
             if (
                 call_counter >= low
                 and call_counter <= high
-                and (low - high) <= 2
+                and (high - low) <= 2
                 and debug_info is not None
             ):
-                call_counter_debug_info[call_counter] = debug_info()
+                cls.add_call_counter_debug_info(
+                    backend, subsystem, call_counter, debug_info
+                )
 
             return call_counter > midpoint
 
@@ -430,7 +472,7 @@ class CompilerBisector:
         assert isinstance(curr_subsystem, Subsystem)
         while True:
             run_state = cls.get_run_state(curr_backend, curr_subsystem.name)
-            reset_counters()
+            cls.reset_counters(curr_backend, curr_subsystem.name)
             if run_state == "test_disable":
                 if not fn():
                     next_subsystem = cls.advance_subsystem(curr_backend, curr_subsystem)
@@ -478,7 +520,7 @@ class CompilerBisector:
                 if low == high:
                     print(
                         f"Binary search completed for {curr_backend} - {curr_subsystem.name}. The bisect number is {low}. "
-                        f"Debug info: {call_counter_debug_info.get(low, 'not found')}"
+                        f"Debug info: {cls.get_call_counter_debug_info(curr_backend, curr_subsystem.name, low) or 'not found'}"
                     )
                     return True
             else:
@@ -550,7 +592,7 @@ class CompilerBisector:
         )
         while True:
             assert curr_backend is not None
-            reset_counters()
+            cls.reset_counters(curr_backend, curr_subsystem_name)
             if curr_subsystem:
                 result = cls.process_subsystem(
                     curr_backend, curr_subsystem, fn, cli_interface=cli_interface
@@ -574,7 +616,9 @@ class CompilerBisector:
                         curr_backend,
                         curr_subsystem.name,
                         low,
-                        call_counter_debug_info.get(low),
+                        cls.get_call_counter_debug_info(
+                            curr_backend, curr_subsystem.name, low
+                        ),
                     )
 
                 next_subsystem = cls.advance_subsystem(curr_backend, curr_subsystem)
