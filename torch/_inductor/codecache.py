@@ -648,6 +648,11 @@ class FxGraphCachePickler(pickle.Pickler):
                 and not opaque_object.has_members(cls)
             ):
                 return (_ident, (t.script_class_name,))
+            if opaque_object.is_opaque_type(cls):
+                # Opaque types (e.g., DeviceMesh) may have cyclic references
+                # that fast-mode pickling cannot handle.  Disable fast mode
+                # before the subtree is pickled so the memo table tracks cycles.
+                self.fast = False
         return (_ident, (t.wrapped_obj, t.script_class_name, t.real_obj))
 
     def dumps(self, obj: Any) -> bytes:
@@ -658,7 +663,6 @@ class FxGraphCachePickler(pickle.Pickler):
             self.dump(obj)
             return self._stream.getvalue()
         except (TypeError, AttributeError, pickle.PicklingError, ValueError) as e:
-            # Some configs options may not pickle.
             log.warning("Failed to pickle cache key", exc_info=True)
             raise BypassFxGraphCache("Failed to pickle cache key") from e
         except RuntimeError as e:
