@@ -35,7 +35,6 @@ import re
 import sys
 import time
 import types
-import typing
 import weakref
 from collections.abc import Callable, MutableMapping
 from types import ModuleType
@@ -4379,14 +4378,7 @@ class SourcelessBuilder:
             return torch._dynamo.variables.higher_order_ops.FlexAttentionBackwardHighOrderVariable(
                 value
             )
-        elif isinstance(
-            value,
-            (
-                types.GenericAlias,
-                types.UnionType,
-                typing._UnionGenericAlias,  # type: ignore[attr-defined]  # pyrefly: ignore[missing-attribute]
-            ),
-        ):
+        elif isinstance(value, (types.GenericAlias, types.UnionType)):
             return TypingVariable(value)
         elif is_namedtuple(value):
             output = [
