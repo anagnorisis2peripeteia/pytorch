@@ -38,6 +38,7 @@ from torch.fx.experimental.symbolic_shapes import (
     SymTypes,
 )
 from torch.fx.node import _get_qualified_name
+from torch.multiprocessing.reductions import StorageWeakRef
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._sympy.singleton_int import SingletonInt
 from torch.utils._sympy.symbol import symbol_is_type, SymT
@@ -97,6 +98,22 @@ ReuseKey = tuple[torch.device, torch.dtype, str, bool, int]
 CommBufferReuseKey = tuple[torch.device, torch.dtype, str, "ir.CommBufferType", str]
 BufferLike = ir.Buffer | WorkspaceArg
 FxConversionFunc = Callable[["WrapperLine"], None]
+
+
+@dataclasses.dataclass(frozen=True)
+class BenchmarkInputView:
+    shape: Any
+    stride: Any
+    offset: int
+
+
+@dataclasses.dataclass
+class BenchmarkStorageGroup:
+    buffer_name: str
+    nbytes: int
+    device: Any
+    dtype: Any
+    inputs: dict[str, BenchmarkInputView]
 
 
 def buffer_reuse_key(node: BufferLike) -> ReuseKey:
@@ -2536,6 +2553,36 @@ class PythonWrapperCodegen(CodeGen):
                     f'raise TypeError("Failed to pickle opaque type {type(value)} for variable {name}: {str(e)}")'
                 )
 
+        # Preserve shared non-empty input storages so benchmark code does not
+        # explode large aliased views into separate allocations.
+        storage_groups: dict[StorageWeakRef, BenchmarkStorageGroup] = {}
+        aliased_input_specs: dict[str, tuple[str, Any, Any, int]] = {}
+        example_inputs = V.graph.example_inputs
+
+        if example_inputs is not None:
+            for name, ex in zip(V.graph.graph_inputs.keys(), example_inputs):
+                if not isinstance(ex, torch.Tensor):
+                    continue
+                storage = ex.untyped_storage()
+                nbytes = storage.nbytes()
+                storage_key = StorageWeakRef(storage)
+                group = storage_groups.get(storage_key)
+                if group is None:
+                    group = BenchmarkStorageGroup(
+                        buffer_name=f"_shared_storage_{len(storage_groups)}",
+                        nbytes=nbytes,
+                        device=ex.device,
+                        dtype=ex.dtype,
+                        inputs={},
+                    )
+                    storage_groups[storage_key] = group
+
+                group.inputs[name] = BenchmarkInputView(
+                    shape=list(ex.shape),
+                    stride=list(ex.stride()),
+                    offset=ex.storage_offset(),
+                )
+
         # Generate get_args() to create input tensors separately from benchmarking
         output.writelines(["", "", "def get_args():"])
         with output.indent():
@@ -2561,6 +2608,22 @@ class PythonWrapperCodegen(CodeGen):
                     # these 'global var_name' lines
                     output.writeline(f"global {name}")
                     add_torchbind_input(name, torchbind_obj)
+
+            # Generate shared storage buffers for aliased inputs
+            for group in storage_groups.values():
+                if len(group.inputs) < 2:
+                    continue
+                numel = group.nbytes // torch._utils._element_size(group.dtype)
+                output.writeline(
+                    f"{group.buffer_name} = rand_strided(({numel},), (1,), device='{group.device}', dtype={group.dtype})"
+                )
+                for name, input_view in group.inputs.items():
+                    aliased_input_specs[name] = (
+                        group.buffer_name,
+                        input_view.shape,
+                        input_view.stride,
+                        input_view.offset,
+                    )
 
             for name, value in V.graph.graph_inputs.items():
                 if isinstance(value, sympy.Symbol) and isinstance(
@@ -2592,6 +2655,13 @@ class PythonWrapperCodegen(CodeGen):
                     )
                 elif isinstance(value, ir.OpaqueObjectState):
                     output.writeline(f"{name} = None")
+                elif name in aliased_input_specs:
+                    buf_name, shape, stride, offset = aliased_input_specs[name]
+                    output.writeline(
+                        f"{name} = torch.as_strided({buf_name}, "
+                        f"{self.codegen_python_shape_tuple(shape)}, "
+                        f"{self.codegen_python_shape_tuple(stride)}, {offset})"
+                    )
                 else:
                     shape = V.graph.sizevars.optimization_hints(
                         value.get_size(), fallback=42
