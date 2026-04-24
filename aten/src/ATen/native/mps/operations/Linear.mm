@@ -14,6 +14,13 @@ using namespace mps;
 static void _mps_linear_nograph(const Tensor& input, const Tensor& weight, const Tensor& bias, Tensor& output) {
   bool is_bias_defined = bias.defined();
 
+  // MPSNDArrayMatrixMultiplication produces non-deterministic results on M5 for >2D
+  // fp16/bf16 inputs. Flatten to 2D for the matmul, then reshape the output.
+  // See https://github.com/pytorch/pytorch/issues/180776.
+  bool needFlatten = input.dim() > 2;
+  auto input2d = needFlatten ? input.flatten(0, -2) : input;
+  auto output2d = needFlatten ? output.flatten(0, -2) : output;
+
   MPSStream* mpsStream = getCurrentMPSStream();
   id<MTLDevice> device = MPSDevice::getInstance()->device();
 
@@ -27,8 +34,8 @@ static void _mps_linear_nograph(const Tensor& input, const Tensor& weight, const
 
       MPSDataType mpsDataType = getMPSDataType(weight.scalar_type());
 
-      auto inputNDArray = getMPSNDArray(input, input.sizes(), input.strides());
-      auto outNDArray = getMPSNDArray(output, output.sizes(), output.strides());
+      auto inputNDArray = getMPSNDArray(input2d, input2d.sizes(), input2d.strides());
+      auto outNDArray = getMPSNDArray(output2d, output2d.sizes(), output2d.strides());
 
       id<MTLBuffer> weightBuf = getMTLBufferStorage(weight);
       MPSNDArrayDescriptor* weightDesc = [MPSNDArrayDescriptor descriptorWithDataType:mpsDataType
