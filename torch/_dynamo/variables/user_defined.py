@@ -73,6 +73,7 @@ from ..source import (
     UnspecializedParamBufferSource,
 )
 from ..utils import (
+    check_args_peekable_as_constant,
     check_constant_args,
     cmp_name_to_op_mapping,
     dict_methods,
@@ -94,7 +95,13 @@ from ..utils import (
     tuple_methods,
     unpatched_nn_module_getattr,
 )
-from .base import MutationType, NO_SUCH_SUBOBJ, ValueMutationNew, VariableTracker
+from .base import (
+    AsPythonConstantNotImplementedError,
+    MutationType,
+    NO_SUCH_SUBOBJ,
+    ValueMutationNew,
+    VariableTracker,
+)
 from .dicts import ConstDictVariable
 from .hashable import HashableTracker
 from .sets import SetVariable
@@ -796,15 +803,21 @@ class UserDefinedClassVariable(UserDefinedVariable):
             var.call_method(tx, "__init__", list(args), kwargs)  # type: ignore[arg-type]
             return var
 
-        if self.can_constant_fold_through() and constant_args:
-            # constant fold
-            return VariableTracker.build(
-                tx,
-                self.as_python_constant()(  # type: ignore[operator]
-                    *[x.as_python_constant() for x in args],
-                    **{k: v.as_python_constant() for k, v in kwargs.items()},
-                ),
-            )
+        if self.can_constant_fold_through() and (
+            constant_args or check_args_peekable_as_constant(args, kwargs)
+        ):
+            # constant fold - catch AsPythonConstantNotImplementedError for lazy
+            # args that realize into SymNodeVariable (specialize_int=False)
+            try:
+                return VariableTracker.build(
+                    tx,
+                    self.as_python_constant()(  # type: ignore[operator]
+                        *[x.as_python_constant() for x in args],
+                        **{k: v.as_python_constant() for k, v in kwargs.items()},
+                    ),
+                )
+            except AsPythonConstantNotImplementedError:
+                pass
         elif self.value is torch.nn.CrossEntropyLoss:
             return self._call_cross_entropy_loss(tx, args, kwargs)
         elif self.value is contextlib.nullcontext:
@@ -3593,6 +3606,22 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
     def items(self) -> list[VariableTracker]:
         assert self._base_vt is not None
         return self._base_vt.items  # type: ignore[return-value]
+
+    def is_python_constant(self) -> bool:
+        can_peek, is_unrealized, _value = self.try_peek_constant()
+        return can_peek and not is_unrealized
+
+    def try_peek_constant(self) -> tuple[bool, bool, Any]:
+        from .lists import TupleVariable
+
+        assert isinstance(self._base_vt, TupleVariable)
+        can_peek, any_unrealized, values = self._base_vt._try_peek_items()
+        if not can_peek:
+            return (False, False, None)
+        try:
+            return (True, any_unrealized, self.get_construct_fn()(values))
+        except NotImplementedError:
+            return (False, False, None)
 
     def call_method(
         self,
