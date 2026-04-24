@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 from __future__ import annotations
 
+import logging
 from typing import Any, TYPE_CHECKING
 
 from ..scheduler import (
@@ -15,6 +16,9 @@ from .cutlass.scheduling import CUTLASSScheduling
 from .nv_universal_gemm.nv_universal_gemm_scheduling import NVUniversalGemmScheduling
 from .rocm.rocm_cpp_scheduling import ROCmCPPScheduling
 from .triton import TritonScheduling
+
+
+log = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
@@ -61,6 +65,8 @@ class CUDACombinedScheduling(BaseScheduling):
             return self._cutedsl_scheduling
         if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(node):
             return self._nv_universal_gemm_scheduling
+        if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_fused_template(node):
+            return self._nv_universal_gemm_scheduling
         return self._triton_scheduling
 
     def can_fuse_vertical(
@@ -77,11 +83,19 @@ class CUDACombinedScheduling(BaseScheduling):
             node1
         ) or self._cutedsl_scheduling.is_cutedsl_template(node2):
             return False
-        # NVIDIA Universal GEMM doesn't support vertical fusion currently
+        # NVIDIA Universal GEMM supports epilogue fusion
         elif self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(
             node1
         ) or self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(node2):
-            return False
+            return self._nv_universal_gemm_scheduling.can_fuse_vertical(node1, node2)
+        elif self._nv_universal_gemm_scheduling.is_nv_universal_gemm_fused_template(
+            node1
+        ):
+            if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_fused_template(
+                node2
+            ):
+                return False
+            return self._nv_universal_gemm_scheduling.can_fuse_vertical(node1, node2)
         return self._triton_scheduling.can_fuse_vertical(node1, node2)
 
     def can_fuse_horizontal(
@@ -134,9 +148,9 @@ class CUDACombinedScheduling(BaseScheduling):
         elif self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(
             template_node
         ):
-            # NVIDIA Universal GEMM doesn't support epilogue/prologue fusion yet
-            assert not epilogue_nodes
-            assert not prologue_nodes
+            assert not prologue_nodes, (
+                "NVIDIA Universal GEMM doesn't support prologue fusion yet"
+            )
             return self._nv_universal_gemm_scheduling.codegen_template(
                 template_node, epilogue_nodes, prologue_nodes
             )
@@ -166,7 +180,64 @@ class CUDACombinedScheduling(BaseScheduling):
         return self._triton_scheduling.benchmark_fused_nodes(nodes)
 
     def benchmark_codegened_module(self, module):
+        # Check if this is an NVGEMM module
+        if getattr(module, "is_nvgemm", False):
+            return self._benchmark_nvgemm_module(module)
         return self._triton_scheduling.benchmark_codegened_module(module)
+
+    def _benchmark_nvgemm_module(self, module) -> tuple[float, str]:
+        """
+        Benchmark an NVGEMM module.
+
+        NVGEMM modules have get_args() and call() functions similar to Triton,
+        but without the triton_ wrapper.
+        """
+
+        from torch._dynamo.utils import preserve_rng_state
+        from torch._inductor.runtime.benchmarking import benchmarker
+        from torch._inductor.utils import get_interface_for_device
+        from torch._inductor.virtualized import V
+
+        device_interface = get_interface_for_device(V.graph.device_type)
+
+        with (
+            preserve_rng_state(),
+            device_interface.device(V.graph.get_current_device_or_throw()),
+        ):
+            # Get args and call function from the module
+            args = module.get_args()
+            call = module.call
+
+            # Warmup call to trigger compilation
+            try:
+                call(args)
+            except (RuntimeError, ValueError) as e:
+                log.debug(
+                    "Exception (%s) in compiling NVGEMM fused kernel",
+                    e,
+                )
+                return float("inf"), module.__file__ or ""
+
+            # Benchmark - reuse args (NVGEMM doesn't modify inputs in-place)
+            device = V.graph.get_current_device_or_throw()
+            ms = benchmarker.benchmark(
+                lambda: call(args),
+                device=device,
+            )
+
+            return ms, module.__file__ or ""
+
+    def _is_nvgemm_node(self, node) -> bool:
+        """Check if a template node is currently configured for NVGEMM codegen."""
+        from torch._inductor.ir import MultiTemplateBuffer, NVUniversalGemmBuffer
+
+        template_node = node.get_template_node()
+        if isinstance(template_node, NVUniversalGemmBuffer):
+            return True
+        if isinstance(template_node, MultiTemplateBuffer):
+            render_fn = template_node.make_kernel_render
+            return getattr(render_fn, "_is_nvgemm", False)
+        return False
 
     def generate_kernel_code_from_nodes(
         self,
@@ -174,6 +245,16 @@ class CUDACombinedScheduling(BaseScheduling):
         benchmark_kernel: bool = False,
         hint_override: int | None = None,
     ) -> str:
+        for node in nodes:
+            if not (hasattr(node, "is_template") and node.is_template()):
+                continue
+            if self._is_nvgemm_node(node):
+                return (
+                    self._nv_universal_gemm_scheduling.generate_kernel_code_from_nodes(
+                        nodes, benchmark_kernel
+                    )
+                )
+            break
         return self._triton_scheduling.generate_kernel_code_from_nodes(
             nodes, benchmark_kernel, hint_override=hint_override
         )
