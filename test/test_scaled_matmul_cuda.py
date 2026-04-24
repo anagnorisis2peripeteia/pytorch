@@ -3,7 +3,6 @@
 import contextlib
 import json
 import math
-import re
 import itertools
 import tempfile
 import unittest
@@ -53,7 +52,6 @@ from torch.testing._internal.common_utils import (
     runOnRocmArch,
     skipIfRocm,
     TEST_CUDA,
-    TEST_WITH_TORCHDYNAMO,
     TestCase,
     skipIfXpu,
 )
