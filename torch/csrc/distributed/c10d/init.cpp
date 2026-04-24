@@ -55,6 +55,8 @@
 #include <torch/csrc/distributed/c10d/symm_mem/nvshmem_extension.hpp>
 #endif
 
+#include <torch/csrc/distributed/c10d/symm_mem/nccl_ep.hpp>
+
 #include <torch/csrc/distributed/c10d/comm.hpp>
 #include <torch/csrc/distributed/c10d/debug.h>
 #include <torch/csrc/distributed/c10d/logger.hpp>
@@ -1264,6 +1266,51 @@ This class does not support ``__members__`` property.)");
           py::arg("offset"),
           py::arg("val"),
           py::arg("count") = 1);
+
+  using NcclEpGroup = ::c10d::nccl_ep::NcclEpGroup;
+  using NcclEpHandle = ::c10d::nccl_ep::NcclEpHandle;
+
+  py::class_<NcclEpGroup, c10::intrusive_ptr<NcclEpGroup>>(
+      module, "_NcclEpGroup")
+      .def_static(
+          "create",
+          &::c10d::nccl_ep::nccl_ep_create_group,
+          py::arg("pg"),
+          py::arg("num_experts"),
+          py::arg("max_tokens_per_rank"),
+          py::arg("token_size_bytes"),
+          py::arg("num_qp_per_rank") = 0,
+          py::arg("num_channels") = 0);
+
+  py::class_<NcclEpHandle, c10::intrusive_ptr<NcclEpHandle>>(
+      module, "_NcclEpHandle")
+      .def_static(
+          "create",
+          &::c10d::nccl_ep::nccl_ep_create_handle,
+          py::arg("group"),
+          py::arg("topk_idx"),
+          py::arg("recv_expert_counter") = py::none())
+      .def(
+          "get_num_recv_tokens",
+          &::c10d::nccl_ep::nccl_ep_handle_get_num_recv_tokens);
+
+  module.def(
+      "_nccl_ep_dispatch",
+      &::c10d::nccl_ep::nccl_ep_dispatch,
+      py::arg("handle"),
+      py::arg("tokens"),
+      py::arg("topk_weights"),
+      py::arg("topk_idx"),
+      py::arg("out_tokens"),
+      py::arg("out_topk_weights"),
+      py::arg("out_topk_idx"));
+
+  module.def(
+      "_nccl_ep_combine",
+      &::c10d::nccl_ep::nccl_ep_combine,
+      py::arg("handle"),
+      py::arg("expert_tokens"),
+      py::arg("out_tokens"));
 
   auto store =
       py::class_<::c10d::Store, c10::intrusive_ptr<::c10d::Store>, PythonStore>(
