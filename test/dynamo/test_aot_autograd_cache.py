@@ -3532,6 +3532,23 @@ class AOTAutogradCachePicklerTests(torch._dynamo.test_case.TestCase):
         ):
             AOTAutogradCache._pickle_entry(entry, remote=False)
 
+    @functorch_config.patch("strict_autograd_cache", True)
+    def test_save_bypasses_triton_launcher_pickle_error(self):
+        """PicklingError from triton's exec'd launcher should be a cache bypass,
+        not a fatal error, even under strict_autograd_cache."""
+        # Simulate triton's exec'd launcher: __module__=None, qualname="launcher"
+        scope: dict[str, object] = {}
+        exec("def launcher(): pass", scope)
+        launcher_fn = scope["launcher"]
+
+        entry = _MockEntryForPickleTest(
+            picklable_field="test",
+            unpicklable_field=launcher_fn,
+        )
+
+        # save() should not raise — it should bypass gracefully
+        AOTAutogradCache.save("test_key", entry, remote=False)  # type: ignore[arg-type]
+
     def test_nested_tensor_subclass_cache_key(self):
         ctx = multiprocessing.get_context("spawn")
         results = []
