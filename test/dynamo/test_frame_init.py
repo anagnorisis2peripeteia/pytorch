@@ -90,7 +90,7 @@ class FrameInitTests(torch._dynamo.test_case.TestCase):
 
         empty_guard_manager = torch._dynamo.guards.GuardManagerWrapper()
 
-        def callback1(frame, cache_entry, frame_state):
+        def callback1(frame, frame_state):
             if frame.f_code in code_map1:
                 transformed_code = code_map1[frame.f_code]
                 return wrap_guarded_code(
@@ -104,7 +104,7 @@ class FrameInitTests(torch._dynamo.test_case.TestCase):
                 )
             return ConvertFrameReturn()
 
-        def callback2(frame, cache_entry, frame_state):
+        def callback2(frame, frame_state):
             if frame.f_code in code_map2:
                 transformed_code = code_map2[frame.f_code]
                 return wrap_guarded_code(

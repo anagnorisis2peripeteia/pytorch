@@ -258,20 +258,14 @@ static py::object dynamo_call_callback(
     py::handle callback,
     THP_EVAL_API_FRAME_OBJECT* _frame,
     FrameLocalsMapping* locals,
-    CacheEntry* cache_entry,
     FrameState* frame_state) {
   THPPyInterpreterFrame* frame = THPPyInterpreterFrame_New(_frame);
   TORCH_CHECK(
       frame, "Dynamo failed to initialize CPython interpreter frame wrapper");
   frame->locals = (PyObject*)framelocals_mapping_to_dict(locals);
 
-  py::object cache_entry_obj = py::none();
-  if (cache_entry) {
-    cache_entry_obj = py::cast(cache_entry, py::return_value_policy::reference);
-  }
-
-  py::object result = callback(
-      py::handle((PyObject*)frame), cache_entry_obj, py::handle(frame_state));
+  py::object result =
+      callback(py::handle((PyObject*)frame), py::handle(frame_state));
   Py_DECREF(frame);
   return result;
 }
@@ -491,12 +485,18 @@ PyObject* dynamo__custom_eval_frame(
     extra = init_and_set_extra_state(F_CODE(frame));
   }
 
-  // Get recursive action
-  FrameExecStrategy strategy = extra_state_get_exec_strategy(extra);
+  // Resolve strategy per isolate_recompiles scope. For non-isolated
+  // frames (id < 0) this returns extra->strategy; for isolated regions
+  // it returns the region's own strategy if set, otherwise inherits
+  // global SKIP (deliberate "do not trace" marks must apply across
+  // regions) but not RUN_ONLY (recompile-limit hits are per-region).
+  int64_t isolate_recompiles_id = get_current_isolate_recompiles_id();
+  FrameExecStrategy strategy =
+      extra_state_get_region_exec_strategy(extra, isolate_recompiles_id);
+
   recursive_callback =
       _callback_from_action(recursive_callback, strategy.recursive_action);
 
-  // Skip this frame
   if (strategy.cur_action == FrameAction::SKIP) {
     DEBUG_TRACE("skip %s", get_frame_name(frame));
     eval_default();
@@ -523,6 +523,7 @@ PyObject* dynamo__custom_eval_frame(
       extra,
       locals.get(),
       backend,
+      isolate_recompiles_id,
       &maybe_cached_code,
       &trace_annotation,
       is_skip_guard_eval_unsafe);
@@ -542,12 +543,14 @@ PyObject* dynamo__custom_eval_frame(
     return eval_result;
   }
 
-  // NB: We only do guard collectives when there are any compiled code entries
-  // at all; these reduces overtriggering and we don't need to do guard
-  // collectives the very first time we've seen a frame
-  // TODO: We could also check if we had just created extra for the first
-  // time?  Not too sure the best condition for extra->cache_entry_list
-  if (guard_complete_hook != nullptr && !extra->cache_entry_list.empty()) {
+  // NB: We only do guard collectives when there are compiled code entries
+  // for the current region (or the default region); this reduces
+  // overtriggering and we don't need to do guard collectives the very first
+  // time we've seen a frame in this region.
+  bool has_relevant_entries =
+      extra->cache_entry_map.count(isolate_recompiles_id) > 0 ||
+      extra->cache_entry_map.count(-1) > 0;
+  if (guard_complete_hook != nullptr && has_relevant_entries) {
     py::handle guard_complete_hook_handle(guard_complete_hook);
     // False means force compilation (someone cache missed)
     py::object res = guard_complete_hook_handle(!Py_IsNone(maybe_cached_code));
@@ -582,7 +585,6 @@ PyObject* dynamo__custom_eval_frame(
   }
 
   // call callback
-  CacheEntry* cache_entry = extract_cache_entry(extra);
   FrameState* frame_state = extract_frame_state(extra);
   py::object callback_result;
   FrameExecStrategy new_strategy;
@@ -597,8 +599,8 @@ PyObject* dynamo__custom_eval_frame(
       return eval_result;
     }
     PreserveGlobalState preserve_global_state;
-    callback_result = dynamo_call_callback(
-        callback, frame, locals.get(), cache_entry, frame_state);
+    callback_result =
+        dynamo_call_callback(callback, frame, locals.get(), frame_state);
     new_strategy =
         callback_result.attr("frame_exec_strategy").cast<FrameExecStrategy>();
     apply_to_code = callback_result.attr("apply_to_code").cast<bool>();
@@ -632,7 +634,8 @@ PyObject* dynamo__custom_eval_frame(
       DEBUG_TRACE(
           "create recursive action: %d\n", new_strategy.recursive_action);
     }
-    extra_state_set_exec_strategy(extra, new_strategy);
+    extra_state_set_region_exec_strategy(
+        extra, isolate_recompiles_id, new_strategy);
   }
 
   if (!Py_IsNone(guarded_code)) {

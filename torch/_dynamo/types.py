@@ -96,7 +96,6 @@ class DynamoCallbackFn(Protocol):
     def __call__(
         self,
         frame: DynamoFrameType,
-        cache_entry: CacheEntry | None,
         frame_state: FrameState,
     ) -> ConvertFrameReturn: ...
 
