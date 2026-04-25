@@ -446,7 +446,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps(const Tensor& 
                                                                   bool is_causal,
                                                                   const std::optional<Tensor>& dropout_mask,
                                                                   std::optional<double> scale,
-                                                                  bool enable_gqa) {
+                                                                  std::optional<bool> enable_gqa) {
   TORCH_CHECK_NOT_IMPLEMENTED(c10::isFloatingType(query.scalar_type()),
                               "scaled_dot_product_attention for MPS does not support dtype ",
                               query.scalar_type());
@@ -461,7 +461,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math_mps(const Tensor& 
       query.is_contiguous_or_false() && key_.is_contiguous_or_false() && value_.is_contiguous_or_false();
   auto key = key_;
   auto value = value_;
-  if (enable_gqa) {
+  if (enable_gqa.value_or(false)) {
     int64_t q_heads = query.size(-3);
     int64_t k_heads = key_.size(-3);
     int64_t repeat_factor = q_heads / k_heads;
