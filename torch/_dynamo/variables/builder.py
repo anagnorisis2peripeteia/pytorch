@@ -2254,9 +2254,13 @@ class VariableBuilder:
                 _spec = get_active_spec_for_arg(self.source.local_name)
                 if isinstance(_spec, IntSpec):
                     if _spec.type is IntSpecType.BACKED:
-                        return self.wrap_symint(value, dynamism=DimDynamic.DYNAMIC)
+                        result = self.wrap_symint(value, dynamism=DimDynamic.DYNAMIC)
+                        self._apply_scalar_hint(result, _spec._guarding_hint)
+                        return result
                     if _spec.type is IntSpecType.UNBACKED:
-                        return self.wrap_symint(value, dynamism=DimDynamic.UNBACKED)
+                        result = self.wrap_symint(value, dynamism=DimDynamic.UNBACKED)
+                        self._apply_scalar_hint(result, _spec._optimization_hint)
+                        return result
                     # STATIC: fall through to default constant specialization.
 
             # allowlist has higher precedence over specialization control.
@@ -2733,6 +2737,26 @@ class VariableBuilder:
         numpy_ndarray_variable.source = self.source
 
         return numpy_ndarray_variable
+
+    def _apply_scalar_hint(self, result: VariableTracker, hint: int | None) -> None:
+        """Thread an ``IntSpec``'s ``guarding_hint`` / ``optimization_hint``
+        into ``ShapeEnv.var_to_hint_override`` for a scalar-int argument
+        just wrapped by :meth:`wrap_symint`.
+
+        No-op if the hint is ``None`` or if the wrapped result fell through
+        to :class:`ConstantVariable` (value got specialized, no symbol).
+
+        Limitation for BACKED: the write is cache-key + optimization-path
+        effective only; the guarding path reads ``backed_var_to_val`` which
+        is populated at symbol-creation time. Threading the hint into
+        ``shape_env.create_unspecified_symint_and_symbol`` would give full
+        effect — deferred as a follow-up.
+        """
+        if hint is None or not isinstance(result, SymNodeVariable):
+            return
+        sym_expr = result.sym_num.node.expr
+        if isinstance(sym_expr, sympy.Symbol):
+            self.tx.output.shape_env.var_to_hint_override[sym_expr] = hint
 
     def wrap_symint(
         self,
@@ -3991,17 +4015,33 @@ def _automatic_dynamic(
         if _spec_arg_name is not None:
             _spec = get_active_spec_for_dim(_spec_arg_name, i)
             if _spec is not None:
+                _spec_hint: int | None = None
                 if _spec.type is IntSpecType.STATIC:
                     marked_static = True
                 elif _spec.type is IntSpecType.BACKED:
                     marked_dynamic = True
+                    _spec_hint = _spec._guarding_hint
                 elif _spec.type is IntSpecType.UNBACKED:
                     marked_unbacked = True
+                    _spec_hint = _spec._optimization_hint
                     if _spec._min is not None or _spec._max is not None:
                         _spec_unbacked_bounds[i] = (
                             _spec._min,
                             _spec._max,
                         )
+                # Thread the spec's hint onto the tensor via the existing
+                # ``_dynamo_hint_overrides`` pipe (same dict that
+                # ``mark_dynamic`` writes). ``_produce_dyn_sizes_from_int_tuple``
+                # reads it at symbol-creation time → lands in
+                # ``backed_var_to_val`` (BACKED dims; the guarding-path hint)
+                # and ``var_to_hint_override`` (cache key + optimization
+                # path for UNBACKED).
+                if _spec_hint is not None:
+                    if not hasattr(e, "_dynamo_hint_overrides"):
+                        # pyrefly: ignore[missing-attribute]
+                        e._dynamo_hint_overrides = {}
+                    # pyrefly: ignore[missing-attribute]
+                    e._dynamo_hint_overrides[i] = _spec_hint
 
         specialize_on.append(getattr(e, "_specialize_on", {}).get(i, []))
 

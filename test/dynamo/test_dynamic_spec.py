@@ -1161,6 +1161,180 @@ class TestListFormRealCompile(TestCase):
         self.assertEqual(cnt.frame_count, 1)
 
 
+class TestScalarHintThreading(TestCase):
+    """Scalar-int ``guarding_hint`` / ``optimization_hint`` threading.
+
+    The builder writes to ``shape_env.var_to_hint_override[sym]`` after
+    ``wrap_symint``. For UNBACKED, this is the canonical dict consumed by
+    ``_optimization_hint_base`` (and inductor autotuning). For BACKED,
+    the write is cache-key-effective only — the guarding path reads
+    ``backed_var_to_val`` which was populated at symbol-creation time
+    with the runtime value.
+    """
+
+    def _scalar_symbol_and_env(self, gm):
+        for node in gm.graph.nodes:
+            if node.op != "placeholder":
+                continue
+            ev = node.meta.get("example_value")
+            if isinstance(ev, torch.SymInt):
+                return ev.node.expr, ev.node.shape_env
+        raise AssertionError("no SymInt placeholder found")
+
+    def _compile_and_get_scalar_env(self, fn, dynamic_shapes, arg_value):
+        backend = EagerAndRecordGraphs()
+        compiled = torch.compile(fn, backend=backend, dynamic_shapes=dynamic_shapes)
+        compiled(torch.randn(3), arg_value)
+        self.assertEqual(len(backend.graphs), 1)
+        return self._scalar_symbol_and_env(backend.graphs[0])
+
+    @skipIfTorchDynamo()
+    def test_backed_scalar_guarding_hint_threaded(self):
+        def fn(x, n):
+            return x + n
+
+        sym, shape_env = self._compile_and_get_scalar_env(
+            fn,
+            {"n": IntSpec.backed("n", guarding_hint=32)},
+            arg_value=8,
+        )
+        self.assertEqual(shape_env.var_to_hint_override[sym], 32)
+
+    @skipIfTorchDynamo()
+    def test_unbacked_scalar_optimization_hint_threaded(self):
+        def fn(x, n):
+            return x + n
+
+        sym, shape_env = self._compile_and_get_scalar_env(
+            fn,
+            {"n": IntSpec.unbacked("n", optimization_hint=512)},
+            arg_value=8,
+        )
+        self.assertEqual(shape_env.var_to_hint_override[sym], 512)
+
+    @skipIfTorchDynamo()
+    def test_backed_scalar_no_hint_no_override(self):
+        def fn(x, n):
+            return x + n
+
+        sym, shape_env = self._compile_and_get_scalar_env(
+            fn,
+            {"n": IntSpec.backed("n")},
+            arg_value=8,
+        )
+        self.assertNotIn(sym, shape_env.var_to_hint_override)
+
+
+class TestTensorDimHintThreading(TestCase):
+    """Tensor-dim ``guarding_hint`` / ``optimization_hint`` threading via
+    the existing ``_dynamo_hint_overrides`` pipe.
+
+    The spec writes ``e._dynamo_hint_overrides[i] = hint`` in
+    ``_automatic_dynamic``; ``_produce_dyn_sizes_from_int_tuple`` reads
+    it at symbol-creation time and calls
+    ``create_symbol(hint_overrides.get(i, val), ...)``. That routes the
+    hint into both ``backed_var_to_val`` (guarding path, for BACKED) and
+    ``var_to_hint_override`` (cache key + optimization path).
+
+    Unlike the scalar-int case, tensor-dim threading gets the full effect
+    for BACKED (the hint replaces the runtime value as the backed value).
+    """
+
+    def _tensor_dim_symbol_and_env(self, gm, dim=0):
+        for node in gm.graph.nodes:
+            if node.op != "placeholder":
+                continue
+            ev = node.meta.get("example_value")
+            if isinstance(ev, torch.Tensor):
+                size = ev.size(dim)
+                if isinstance(size, torch.SymInt):
+                    return size.node.expr, size.node.shape_env
+        raise AssertionError(f"no tensor placeholder with SymInt at dim {dim}")
+
+    def _compile_and_get_tensor_dim_env(self, fn, dynamic_shapes, shape):
+        backend = EagerAndRecordGraphs()
+        compiled = torch.compile(fn, backend=backend, dynamic_shapes=dynamic_shapes)
+        compiled(torch.randn(*shape))
+        return self._tensor_dim_symbol_and_env(backend.graphs[0])
+
+    @skipIfTorchDynamo()
+    def test_backed_tensor_dim_guarding_hint_threaded(self):
+        """BACKED tensor-dim hint replaces runtime value in
+        ``backed_var_to_val`` (via the symbol-creation pipe) and also
+        lands in ``var_to_hint_override``."""
+        ts = TensorSpec(2).set(0, IntSpec.backed("batch", guarding_hint=32))
+        sym, shape_env = self._compile_and_get_tensor_dim_env(
+            lambda x: x.sum(0),
+            {"x": ts},
+            shape=(8, 3),  # runtime size=8; hint=32
+        )
+        self.assertEqual(shape_env.var_to_hint_override[sym], 32)
+        # Full effect: the "true" guarding hint in backed_var_to_val is
+        # the override value (32), not the runtime value (8).
+        self.assertEqual(shape_env.backed_var_to_val[sym], 32)
+
+    @skipIfTorchDynamo()
+    def test_unbacked_tensor_dim_optimization_hint_threaded(self):
+        ts = TensorSpec(2).set(0, IntSpec.unbacked("batch", optimization_hint=512))
+        sym, shape_env = self._compile_and_get_tensor_dim_env(
+            lambda x: x.sum(0),
+            {"x": ts},
+            shape=(8, 3),
+        )
+        self.assertEqual(shape_env.var_to_hint_override[sym], 512)
+        # Unbacked symbols intentionally have no backed_var_to_val entry.
+        self.assertNotIn(sym, shape_env.backed_var_to_val)
+
+    @skipIfTorchDynamo()
+    def test_backed_tensor_dim_no_hint_uses_runtime_value(self):
+        ts = TensorSpec(2).set(0, IntSpec.backed("batch"))
+        sym, shape_env = self._compile_and_get_tensor_dim_env(
+            lambda x: x.sum(0),
+            {"x": ts},
+            shape=(8, 3),
+        )
+        self.assertEqual(shape_env.backed_var_to_val[sym], 8)
+        self.assertNotIn(sym, shape_env.var_to_hint_override)
+
+
+class TestExclusionGuardInterop(TestCase):
+    """Specs compose with the existing ``automatic_dynamic_exclusion_guard``
+    subsystem. The spec drives dynamism; the exclusion guard only filters
+    which already-compiled cache entry to dispatch to. Both should coexist
+    without extra recompiles or silent spec drops.
+    """
+
+    @skipIfTorchDynamo()
+    @torch._dynamo.config.patch(automatic_dynamic_exclusion_guard=True)
+    def test_backed_spec_plus_exclusion_guard_single_compile(self):
+        """BACKED ``ModelSpec`` + ``automatic_dynamic_exclusion_guard=True``
+        together: spec still drives dynamism, compile count stays at 1
+        across varying shapes/scalars. Prior-art exclusion-guard tests
+        live in ``test_guard_exclusion.py::test_multi_tensor_and_scalar_accumulation``.
+        """
+
+        def fn(x, n):
+            return x.sum(0) + n
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes=ModelSpec(
+                {
+                    "x": TensorSpec(2).set(0, IntSpec.backed("batch")),
+                    "n": IntSpec.backed("n"),
+                }
+            ),
+        )
+        for shape0, n in [(4, 3), (8, 5), (16, 7), (32, 11)]:
+            x = torch.randn(shape0, 3)
+            self.assertEqual(compiled(x, n), fn(x, n))
+        # Spec wins: one compile across 4 varying (shape, n) calls,
+        # not 4. Exclusion guard doesn't force extra recompiles.
+        self.assertEqual(cnt.frame_count, 1)
+
+
 class TestKnownGaps(TestCase):
     """Tests demonstrating known unfixed bugs / feature gaps in the current
     integration. Each test here is expected to fail until the corresponding
