@@ -30,10 +30,11 @@ https://dev-discuss.pytorch.org/t/backed-to-unbacked-from-guardable-to-guardless
 """
 
 import enum
+from collections.abc import Iterator
 from typing import Any, ClassVar
 
 
-__all__ = ["IntSpecType", "IntSpec"]
+__all__ = ["IntSpecType", "IntSpec", "TensorSpec"]
 
 
 class IntSpecType(enum.Enum):
@@ -315,3 +316,63 @@ class IntSpec:
         if self._optimization_hint is not None:
             parts.append(f"optimization_hint={self._optimization_hint}")
         return f"IntSpec({', '.join(parts)})"
+
+
+class TensorSpec:
+    """Per-dimension shape specification for a tensor.
+
+    A list-like container of ``IntSpec | None`` with length equal to the
+    tensor's rank. ``None`` entries inherit the default dynamism policy from
+    the compile context.
+
+    Example::
+
+        ts = TensorSpec(3)
+        ts.set(0, IntSpec.backed("batch", min=1, max=64))
+        # dims 1 and 2 are None -> inherit context default
+    """
+
+    def __init__(self, rank: int) -> None:
+        if rank < 0:
+            raise ValueError(f"rank must be non-negative, got {rank}")
+        self._rank = rank
+        self._specs: list[IntSpec | None] = [None] * rank
+
+    @classmethod
+    def from_list(cls, specs: list[IntSpec | None]) -> "TensorSpec":
+        """Construct from an existing list of specs."""
+        ts = cls(len(specs))
+        ts._specs = list(specs)
+        return ts
+
+    @property
+    def rank(self) -> int:
+        return self._rank
+
+    def set(self, index: int, spec: IntSpec) -> "TensorSpec":
+        """Set the spec at ``index`` and return ``self`` for chaining."""
+        self._specs[index] = spec
+        return self
+
+    def __getitem__(self, index: int) -> IntSpec | None:
+        return self._specs[index]
+
+    def __setitem__(self, index: int, spec: IntSpec | None) -> None:
+        self._specs[index] = spec
+
+    def __len__(self) -> int:
+        return self._rank
+
+    def __iter__(self) -> Iterator[IntSpec | None]:
+        return iter(self._specs)
+
+    def __repr__(self) -> str:
+        specified = [
+            f"{i}: {spec!r}" for i, spec in enumerate(self._specs) if spec is not None
+        ]
+        return f"TensorSpec(rank={self._rank}, {{{', '.join(specified)}}})"
+
+    # No ``__eq__`` / ``__hash__``: matches :class:`IntSpec`'s design — specs
+    # are immutable compile-time inputs compared via ``repr()`` when needed.
+    # Value-based equality would force cache keys to drift with object
+    # identity and conflict with the AOT-snapshot invariant.
