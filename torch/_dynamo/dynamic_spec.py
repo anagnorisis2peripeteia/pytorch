@@ -31,10 +31,11 @@ https://dev-discuss.pytorch.org/t/backed-to-unbacked-from-guardable-to-guardless
 
 import enum
 from collections.abc import Iterator
+from contextvars import ContextVar
 from typing import Any, ClassVar
 
 
-__all__ = ["IntSpecType", "IntSpec", "TensorSpec"]
+__all__ = ["IntSpecType", "IntSpec", "TensorSpec", "ModelSpec"]
 
 
 class IntSpecType(enum.Enum):
@@ -374,5 +375,112 @@ class TensorSpec:
 
     # No ``__eq__`` / ``__hash__``: matches :class:`IntSpec`'s design — specs
     # are immutable compile-time inputs compared via ``repr()`` when needed.
-    # Value-based equality would force cache keys to drift with object
-    # identity and conflict with the AOT-snapshot invariant.
+
+
+class ModelSpec:
+    """Top-level dynamic-shape specification for a whole compiled model.
+
+    A dict-like container mapping argument names (as they appear in the
+    compiled function's signature) to per-argument specs. Per-argument spec
+    can be:
+
+    - :class:`TensorSpec` — per-dimension spec for a tensor argument.
+    - :class:`IntSpec` — spec for a scalar integer argument.
+    - ``dict[int, IntSpec | None]`` — sparse per-dim spec.
+    - ``list[IntSpec | None]`` / ``tuple[IntSpec | None, ...]`` — positional
+      per-dim spec.
+    - ``None`` — inherit the compile-context default for that argument.
+
+    Example::
+
+        ModelSpec(
+            {
+                "x": TensorSpec(2).set(0, IntSpec.backed("batch")),
+                "batch_size": IntSpec.backed("batch"),
+            }
+        )
+    """
+
+    def __init__(self, specs: dict[str, Any] | None = None) -> None:
+        self._specs: dict[str, Any] = dict(specs) if specs else {}
+
+    def set(self, name: str, spec: Any) -> "ModelSpec":
+        """Assign *spec* to the argument *name*. Returns ``self`` for chaining."""
+        self._specs[name] = spec
+        return self
+
+    def __getitem__(self, name: str) -> Any:
+        return self._specs[name]
+
+    def __setitem__(self, name: str, spec: Any) -> None:
+        self._specs[name] = spec
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._specs
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._specs)
+
+    def __len__(self) -> int:
+        return len(self._specs)
+
+    def items(self) -> Any:
+        return self._specs.items()
+
+    def get(self, name: str, default: Any = None) -> Any:
+        return self._specs.get(name, default)
+
+    def __repr__(self) -> str:
+        return f"ModelSpec({self._specs!r})"
+
+    # No ``__eq__`` / ``__hash__``: matches :class:`IntSpec` / :class:`TensorSpec`.
+
+
+# ContextVar carrying the dynamic_shapes spec for the currently-running
+# ``torch.compile``'d function. Set by :func:`_apply_dynamic_shapes` on each
+# call; read by :func:`get_active_spec_for_dim` from inside the Dynamo
+# variable builder during input wrapping. No tensor monkey-patching; no
+# pre-installed guards — the spec directly selects ``DimDynamic`` in
+# ``_automatic_dynamic``.
+_active_dynamic_shapes: ContextVar[dict[str, Any] | None] = ContextVar(
+    "_dynamo_active_dynamic_shapes", default=None
+)
+
+
+def _resolve_dim_spec(arg_spec: Any, dim: int) -> "IntSpec | None":
+    """Extract the :class:`IntSpec` for *dim* from a per-argument spec.
+
+    Supports the four forms accepted in ``dynamic_shapes``: ``TensorSpec``,
+    ``dict[int, IntSpec]``, ``list``/``tuple`` of IntSpec-or-None, or an
+    :class:`IntSpec` directly (for scalar-int arguments; ``dim`` ignored).
+    """
+    if isinstance(arg_spec, IntSpec):
+        return arg_spec
+    if isinstance(arg_spec, TensorSpec):
+        return arg_spec[dim] if 0 <= dim < len(arg_spec) else None
+    if isinstance(arg_spec, dict):
+        return arg_spec.get(dim)
+    if isinstance(arg_spec, (list, tuple)):
+        return arg_spec[dim] if 0 <= dim < len(arg_spec) else None
+    return None
+
+
+def get_active_spec_for_arg(arg_name: str) -> Any:
+    """Return the spec associated with *arg_name* in the active
+    ``dynamic_shapes``, or ``None`` if no spec is active or the arg is not
+    listed."""
+    spec_dict = _active_dynamic_shapes.get()
+    if spec_dict is None:
+        return None
+    if isinstance(spec_dict, ModelSpec):
+        return spec_dict.get(arg_name)
+    return spec_dict.get(arg_name)
+
+
+def get_active_spec_for_dim(arg_name: str, dim: int) -> "IntSpec | None":
+    """Return the :class:`IntSpec` for *dim* of argument *arg_name* in the
+    active ``dynamic_shapes``, or ``None``."""
+    arg_spec = get_active_spec_for_arg(arg_name)
+    if arg_spec is None:
+        return None
+    return _resolve_dim_spec(arg_spec, dim)

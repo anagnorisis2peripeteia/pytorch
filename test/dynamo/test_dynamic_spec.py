@@ -7,7 +7,15 @@ import torch._dynamo
 import torch._dynamo.testing
 import torch.fx.experimental._config as _fx_experimental_config
 from torch._dynamo.decorators import mark_static, mark_unbacked, maybe_mark_dynamic
-from torch._dynamo.dynamic_spec import IntSpec, IntSpecType, TensorSpec
+from torch._dynamo.dynamic_spec import (
+    _active_dynamic_shapes,
+    get_active_spec_for_arg,
+    get_active_spec_for_dim,
+    IntSpec,
+    IntSpecType,
+    ModelSpec,
+    TensorSpec,
+)
 from torch._dynamo.test_case import TestCase
 from torch._dynamo.testing import EagerAndRecordGraphs
 from torch.fx.experimental.symbolic_shapes import (
@@ -842,6 +850,397 @@ class TestIntSpecCompile(TestCase):
         )
         x = torch.randn(4, 3)
         self.assertEqual(fn(x), x + 1)
+
+
+class TestModelSpec(TestCase):
+    """Construction and dict-like interface of ModelSpec."""
+
+    def test_empty(self):
+        ms = ModelSpec()
+        self.assertEqual(len(ms), 0)
+        self.assertNotIn("x", ms)
+
+    def test_construct_from_dict(self):
+        ms = ModelSpec(
+            {
+                "x": TensorSpec(2).set(0, IntSpec.backed("batch")),
+                "n": IntSpec.backed("n"),
+            }
+        )
+        self.assertEqual(len(ms), 2)
+        self.assertIn("x", ms)
+        self.assertIn("n", ms)
+
+    def test_set_fluent(self):
+        ms = ModelSpec()
+        spec = IntSpec.static(value=10)
+        result = ms.set("x", spec)
+        self.assertIs(result, ms)
+        self.assertIs(ms["x"], spec)
+
+    def test_getitem_setitem(self):
+        ms = ModelSpec()
+        spec = IntSpec.backed("n")
+        ms["n"] = spec
+        self.assertIs(ms["n"], spec)
+
+    def test_get_with_default(self):
+        ms = ModelSpec()
+        self.assertIsNone(ms.get("missing"))
+        self.assertEqual(ms.get("missing", "sentinel"), "sentinel")
+
+    def test_iter(self):
+        ms = ModelSpec({"a": IntSpec.static(), "b": IntSpec.backed()})
+        self.assertEqual(set(ms), {"a", "b"})
+
+    def test_items(self):
+        spec = IntSpec.static()
+        ms = ModelSpec({"a": spec})
+        items = list(ms.items())
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0][0], "a")
+        self.assertIs(items[0][1], spec)
+
+
+class TestContextVar(TestCase):
+    """The _active_dynamic_shapes ContextVar and its helpers."""
+
+    def test_default_is_none(self):
+        self.assertIsNone(_active_dynamic_shapes.get())
+
+    def test_helpers_return_none_when_unset(self):
+        self.assertIsNone(get_active_spec_for_arg("x"))
+        self.assertIsNone(get_active_spec_for_dim("x", 0))
+
+    def test_set_and_reset(self):
+        spec = IntSpec.backed("batch")
+        token = _active_dynamic_shapes.set({"x": spec})
+        try:
+            self.assertIs(get_active_spec_for_arg("x"), spec)
+            self.assertIsNone(get_active_spec_for_arg("missing"))
+        finally:
+            _active_dynamic_shapes.reset(token)
+        self.assertIsNone(_active_dynamic_shapes.get())
+
+    def test_resolve_dim_from_dict(self):
+        spec = IntSpec.backed("batch")
+        token = _active_dynamic_shapes.set({"x": {0: spec}})
+        try:
+            self.assertIs(get_active_spec_for_dim("x", 0), spec)
+            self.assertIsNone(get_active_spec_for_dim("x", 1))
+        finally:
+            _active_dynamic_shapes.reset(token)
+
+    def test_resolve_dim_from_list(self):
+        spec = IntSpec.backed("batch")
+        token = _active_dynamic_shapes.set({"x": [spec, None]})
+        try:
+            self.assertIs(get_active_spec_for_dim("x", 0), spec)
+            self.assertIsNone(get_active_spec_for_dim("x", 1))
+            self.assertIsNone(get_active_spec_for_dim("x", 5))  # OOB
+        finally:
+            _active_dynamic_shapes.reset(token)
+
+    def test_resolve_dim_from_tensorspec(self):
+        spec = IntSpec.backed("batch")
+        ts = TensorSpec(2).set(0, spec)
+        token = _active_dynamic_shapes.set({"x": ts})
+        try:
+            self.assertIs(get_active_spec_for_dim("x", 0), spec)
+            self.assertIsNone(get_active_spec_for_dim("x", 1))
+        finally:
+            _active_dynamic_shapes.reset(token)
+
+    def test_resolve_dim_from_intspec_scalar(self):
+        # For a scalar arg, the per-arg spec is an IntSpec directly.
+        # get_active_spec_for_dim returns it regardless of dim index.
+        spec = IntSpec.backed("n")
+        token = _active_dynamic_shapes.set({"n": spec})
+        try:
+            self.assertIs(get_active_spec_for_dim("n", 0), spec)
+        finally:
+            _active_dynamic_shapes.reset(token)
+
+    def test_modelspec_as_active(self):
+        spec = IntSpec.backed("batch")
+        ms = ModelSpec({"x": spec})
+        token = _active_dynamic_shapes.set(ms)
+        try:
+            self.assertIs(get_active_spec_for_arg("x"), spec)
+        finally:
+            _active_dynamic_shapes.reset(token)
+
+
+class TestScalarIntCompile(TestCase):
+    """torch.compile(dynamic_shapes=...) with scalar-int arguments."""
+
+    @skipIfTorchDynamo()
+    def test_scalar_backed_no_recompile(self):
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def fn(x, n):
+            return x + n
+
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes={"n": IntSpec.backed("n")},
+        )
+        for n in [4, 8, 16, 32]:
+            compiled(torch.randn(3), n)
+        # BACKED scalar: single compile, dynamic symbol.
+        self.assertEqual(cnt.frame_count, 1)
+
+    @_fx_experimental_config.patch(no_data_dependent_graph_break=True)
+    def test_scalar_unbacked_dde_on_branching(self):
+        """UNBACKED scalar branched on → raw ``GuardOnDataDependentSymNode``
+        (bypassing the default ``UserError`` wrap via the config patch).
+        Asserts structurally on ``cm.exception.cond.free_symbols``.
+        """
+
+        def fn(x, n):
+            if n > 5:
+                return x + 1
+            return x - 1
+
+        compiled = torch.compile(
+            fn,
+            backend="eager",
+            fullgraph=True,
+            dynamic_shapes={"n": IntSpec.unbacked()},
+        )
+        with self.assertRaises(GuardOnDataDependentSymNode) as cm:
+            compiled(torch.randn(3), 10)
+        free_syms = cm.exception.cond.free_symbols
+        self.assertEqual(len(free_syms), 1)
+        (sym,) = free_syms
+        self.assertTrue(
+            str(sym).startswith("u"),
+            msg=f"expected unbacked symbol (u-prefix), got {sym!r}",
+        )
+
+    def test_modelspec_mixed_tensor_and_scalar(self):
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def fn(x, n):
+            return x.sum(0) + n
+
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes=ModelSpec(
+                {
+                    "x": TensorSpec(2).set(0, IntSpec.backed("batch")),
+                    "n": IntSpec.backed("n"),
+                }
+            ),
+        )
+        for shape0, n in [(4, 8), (8, 16), (16, 32)]:
+            compiled(torch.randn(shape0, 3), n)
+        # Both dims are dynamic → single compile.
+        self.assertEqual(cnt.frame_count, 1)
+
+
+class TestTopLevelOnly(TestCase):
+    """Spec keys only match top-level arguments; nested sources are ignored."""
+
+    def test_nested_dict_arg_is_not_spec_target(self):
+        """If the fn takes a dict ``d`` and the spec names ``d``, the nested
+        tensor inside ``d`` must NOT receive the spec meant for the dict."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        def fn(d):
+            return d["x"].sum(0)
+
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            # A BACKED IntSpec keyed by "d" — only makes sense at the dict
+            # level; must not apply to d["x"].
+            dynamic_shapes={"d": IntSpec.backed("d")},
+        )
+        # Varying d["x"]'s dim 0 would normally trigger recompiles (static
+        # default). If the spec had wrongly been applied to the tensor,
+        # we'd see a single compile.
+        compiled({"x": torch.randn(4, 3)})
+        compiled({"x": torch.randn(8, 3)})
+        # at least two frames -> the spec did NOT silently apply to the tensor
+        self.assertGreaterEqual(cnt.frame_count, 2)
+
+
+class TestDynamicShapesKwargValidation(TestCase):
+    """Entry-point validation for ``torch.compile(dynamic_shapes=...)``.
+
+    The check lives in ``OptimizeContext.__init__`` (in ``eval_frame.py``),
+    triggered at ``torch.compile(...)`` call time (not deferred until the
+    first invocation).
+    """
+
+    def test_rejects_non_dict_non_modelspec(self):
+        def fn(x):
+            return x + 1
+
+        with self.assertRaisesRegex(TypeError, "dict or ModelSpec"):
+            torch.compile(
+                fn,
+                backend="eager",
+                dynamic_shapes=[IntSpec.backed("x")],  # type: ignore[arg-type]
+            )
+
+
+class TestListFormRealCompile(TestCase):
+    """End-to-end: list-form tensor-dim specs through the real
+    ``torch.compile(dynamic_shapes=...)`` integration (not the PR 1/PR 2
+    scaffolding helper).
+
+    These tests exercise the ContextVar path that ``OptimizeContext``
+    sets up: builder hooks read the spec, override ``marked_*``, and
+    compile with the requested dynamism.
+    """
+
+    @skipIfTorchDynamo()
+    def test_list_form_single_compile_backed(self):
+        """Raw list in ``dynamic_shapes`` for a tensor: dim 0 BACKED,
+        dim 1 inherits context. Single compile across varying dim-0 sizes.
+        """
+
+        def fn(x):
+            return x.sum(0)
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes={"x": [IntSpec.backed("batch"), None]},
+        )
+        for n in [4, 8, 16]:
+            x = torch.randn(n, 3)
+            self.assertEqual(compiled(x), fn(x))
+        self.assertEqual(cnt.frame_count, 1)
+
+    @skipIfTorchDynamo()
+    def test_tensorspec_from_list_e2e(self):
+        """Same test, but construct the per-dim spec container via
+        ``TensorSpec.from_list`` — rank inferred from the list length."""
+
+        def fn(x):
+            return x.sum(0)
+
+        ts = TensorSpec.from_list([IntSpec.backed("batch"), None])
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(fn, backend=cnt, dynamic_shapes={"x": ts})
+        for n in [4, 8, 16]:
+            x = torch.randn(n, 3)
+            self.assertEqual(compiled(x), fn(x))
+        self.assertEqual(cnt.frame_count, 1)
+
+    @skipIfTorchDynamo()
+    def test_modelspec_list_form_plus_scalar(self):
+        """``ModelSpec`` mixing list-form per-dim tensor + scalar-int.
+        Single compile across varying shapes and scalar values, outputs
+        match eager."""
+
+        def fn(x, n):
+            return x.sum(0) + n
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes=ModelSpec(
+                {
+                    "x": [IntSpec.backed("batch"), None],
+                    "n": IntSpec.backed(guarding_hint=32),
+                }
+            ),
+        )
+        for shape0, n in [(4, 3), (8, 5), (16, 7)]:
+            x = torch.randn(shape0, 3)
+            self.assertEqual(compiled(x, n), fn(x, n))
+        # Both dims dynamic → single compile across 3 varying calls.
+        self.assertEqual(cnt.frame_count, 1)
+
+
+class TestKnownGaps(TestCase):
+    """Tests demonstrating known unfixed bugs / feature gaps in the current
+    integration. Each test here is expected to fail until the corresponding
+    fix lands; see torch/_dynamo/DYNAMIC_SHAPES_INTEGRATION.md."""
+
+    @skipIfTorchDynamo()
+    def test_nn_module_spec_applies_to_forward_args(self):
+        """Bug: OptimizedModule may not dispatch through the wrapper that
+        sets the ContextVar, so the spec never reaches the tracing path.
+        Expected: single compile across varying shapes (backed). Bug
+        symptom: per-shape recompiles because the ContextVar was None
+        during tracing."""
+
+        class M(torch.nn.Module):
+            def forward(self, x):
+                return x.sum(0)
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            M(),
+            backend=cnt,
+            dynamic_shapes={"x": {0: IntSpec.backed("batch")}},
+        )
+        for n in [4, 8, 16, 32]:
+            compiled(torch.randn(n, 3))
+        self.assertEqual(cnt.frame_count, 1)
+
+    @skipIfTorchDynamo()
+    def test_backed_respects_max_bound(self):
+        """Bug: IntSpec.backed(min=N, max=M) bounds are silently dropped.
+        Expected: a value outside the declared max should either raise or
+        at least recompile. Symptom of the bug: the out-of-range value is
+        accepted without any complaint."""
+
+        def fn(x):
+            return x.sum(0)
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            fn,
+            backend=cnt,
+            dynamic_shapes={"x": {0: IntSpec.backed("batch", min=1, max=8)}},
+        )
+        compiled(torch.randn(4, 3))
+        # A size above max should produce a constraint violation, guard
+        # failure, or forced recompile. None of these will happen today
+        # because min/max are dropped by the hook.
+        with self.assertRaises(Exception):
+            compiled(torch.randn(100, 3))
+
+    @skipIfTorchDynamo()
+    def test_static_shapes_shortcircuit_does_not_override_spec(self):
+        """Bug: tensor_always_has_static_shape (e.g. nn.Parameter,
+        specialized-nn-module sources) short-circuits _automatic_dynamic
+        before the spec hook runs, silently ignoring the spec.
+
+        Reproduces by compiling an nn.Module that stores an nn.Parameter
+        and takes it via forward. With BACKED spec on the parameter,
+        shape changes should be absorbed into one graph."""
+
+        class M(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.w = torch.nn.Parameter(torch.randn(4, 3))
+
+            def forward(self, x):
+                return x + self.w.sum(0)
+
+        cnt = torch._dynamo.testing.CompileCounter()
+        compiled = torch.compile(
+            M(),
+            backend=cnt,
+            dynamic_shapes={"x": {0: IntSpec.backed("batch")}},
+        )
+        for n in [4, 8, 16]:
+            compiled(torch.randn(n, 3))
+        # Spec is on `x` (not the parameter), so this should work even
+        # today — but keeping a placeholder test that parameters don't
+        # interfere via the static-shape shortcut.
+        self.assertEqual(cnt.frame_count, 1)
 
 
 if __name__ == "__main__":

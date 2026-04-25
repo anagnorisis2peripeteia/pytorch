@@ -45,6 +45,12 @@ import sympy
 import torch
 from torch import SymInt
 from torch._dispatch.python import enable_python_dispatcher
+from torch._dynamo.dynamic_spec import (
+    get_active_spec_for_arg,
+    get_active_spec_for_dim,
+    IntSpec,
+    IntSpecType,
+)
 from torch._dynamo.graph_bytecode_inputs import (
     CURRENT_STREAM_INDEX,
     get_external_object_by_index,
@@ -2240,6 +2246,19 @@ class VariableBuilder:
     def wrap_literal(self, value: object) -> VariableTracker:
         if type(value) is int:
             assert isinstance(value, int)
+            # Active dynamic_shapes spec (from torch.compile(dynamic_shapes=...))
+            # has the highest precedence for scalar-int arguments. Only applies
+            # to top-level arguments (source is directly a LocalSource); nested
+            # sources (AttrSource, GetItemSource) are skipped by design.
+            if isinstance(self.source, LocalSource):
+                _spec = get_active_spec_for_arg(self.source.local_name)
+                if isinstance(_spec, IntSpec):
+                    if _spec.type is IntSpecType.BACKED:
+                        return self.wrap_symint(value, dynamism=DimDynamic.DYNAMIC)
+                    if _spec.type is IntSpecType.UNBACKED:
+                        return self.wrap_symint(value, dynamism=DimDynamic.UNBACKED)
+                    # STATIC: fall through to default constant specialization.
+
             # allowlist has higher precedence over specialization control.
             if is_dynamic_source(self.source.name):
                 log.debug("%s marked dynamic via source whitelist", self.source.name)
@@ -3940,6 +3959,21 @@ def _automatic_dynamic(
     constraint_sizes = []
     constraint_strides = []
     specialize_on = []
+    # Resolve per-argument spec from the active dynamic_shapes ContextVar
+    # (set by torch.compile(dynamic_shapes=...)). A present spec overrides
+    # the _dynamo_*_indices monkey-patch path below; see
+    # torch/_dynamo/DYNAMIC_SHAPES_INTEGRATION.md.
+    #
+    # Only top-level argument tensors are subject to the spec. Nested sources
+    # (AttrSource, GetItemSource, ...) are intentionally skipped — spec keys
+    # name the function's top-level arguments, not arbitrary subfields.
+    _spec_arg_name: str | None = (
+        source.local_name if isinstance(source, LocalSource) else None
+    )
+    # Per-dim UNBACKED bounds contributed by the active spec. Merged with
+    # ``_dynamo_unbacked_bounds`` when building the StatefulSymbolicContext.
+    _spec_unbacked_bounds: dict[int, tuple[int | None, int | None]] = {}
+
     for i in range(e.dim()):
         # NB: mark dynamic has precedence over static
         marked_strict_unbacked = i in getattr(
@@ -3949,6 +3983,25 @@ def _automatic_dynamic(
         marked_dynamic = i in getattr(e, "_dynamo_dynamic_indices", set())
         marked_weak_dynamic = i in getattr(e, "_dynamo_weak_dynamic_indices", set())
         marked_static = i in getattr(e, "_dynamo_static_indices", set())
+
+        # Apply the active dynamic_shapes spec (if any) on top of the
+        # attribute-based marks. Spec wins over automatic_dynamic and over
+        # compile(dynamic=...).
+        _spec: IntSpec | None = None
+        if _spec_arg_name is not None:
+            _spec = get_active_spec_for_dim(_spec_arg_name, i)
+            if _spec is not None:
+                if _spec.type is IntSpecType.STATIC:
+                    marked_static = True
+                elif _spec.type is IntSpecType.BACKED:
+                    marked_dynamic = True
+                elif _spec.type is IntSpecType.UNBACKED:
+                    marked_unbacked = True
+                    if _spec._min is not None or _spec._max is not None:
+                        _spec_unbacked_bounds[i] = (
+                            _spec._min,
+                            _spec._max,
+                        )
 
         specialize_on.append(getattr(e, "_specialize_on", {}).get(i, []))
 
@@ -4008,7 +4061,23 @@ def _automatic_dynamic(
             if marked_dynamic and not config.allow_ignore_mark_dynamic:
                 # constraint_stride is deliberaly kept None because no easy way to provide value ranges for mark dynamic
                 constraint_stride = None
-                if hasattr(e, "_dynamo_dynamic_range"):
+                # Active dynamic_shapes spec wins over _dynamo_dynamic_range.
+                if (
+                    _spec is not None
+                    and _spec.type is IntSpecType.BACKED
+                    and (_spec._min is not None or _spec._max is not None)
+                ):
+                    from torch.fx.experimental.symbolic_shapes import (
+                        StrictMinMaxConstraint,
+                    )
+
+                    _lo = _spec._min if _spec._min is not None else -math.inf
+                    _hi = _spec._max if _spec._max is not None else math.inf
+                    constraint_size = StrictMinMaxConstraint(
+                        vr=ValueRanges(lower=_lo, upper=_hi),
+                        warn_only=False,
+                    )
+                elif hasattr(e, "_dynamo_dynamic_range"):
                     dim_range = [
                         dr for dr in e._dynamo_dynamic_range if dr.dim == i
                     ].pop()
@@ -4075,6 +4144,15 @@ def _automatic_dynamic(
         dynamic_sizes.append(dynamic_size)
         dynamic_strides.append(dynamic_stride)
 
+    _merged_unbacked_bounds: dict[int, tuple[int | None, int | None]] | None
+    _attr_unbacked_bounds = getattr(e, "_dynamo_unbacked_bounds", None)
+    if _spec_unbacked_bounds and _attr_unbacked_bounds:
+        _merged_unbacked_bounds = {**_attr_unbacked_bounds, **_spec_unbacked_bounds}
+    elif _spec_unbacked_bounds:
+        _merged_unbacked_bounds = _spec_unbacked_bounds
+    else:
+        _merged_unbacked_bounds = _attr_unbacked_bounds
+
     return StatefulSymbolicContext(
         dynamic_sizes=dynamic_sizes,
         dynamic_strides=dynamic_strides,
@@ -4086,7 +4164,7 @@ def _automatic_dynamic(
         tensor_source=source,
         shape_env_to_source_to_symbol_cache=shape_env_to_source_to_symbol_cache,
         shape_ids=getattr(e, "_dynamo_shape_ids", None),
-        unbacked_bounds=getattr(e, "_dynamo_unbacked_bounds", None),
+        unbacked_bounds=_merged_unbacked_bounds,
         excluded_sizes=frame_state_entry.excluded_sizes,
     )
 
