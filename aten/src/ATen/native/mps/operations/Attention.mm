@@ -802,10 +802,10 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_flash_attention_varlen_for_mps(
   const int64_t kvH = key.size(1);
   const int64_t gqa_factor = H / kvH;
   static const std::unordered_set<int64_t> kSupportedHeadDims = {
-      32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256};
+      32, 48, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 448, 512};
   TORCH_CHECK(kSupportedHeadDims.count(D),
     "_scaled_dot_product_flash_attention_varlen_for_mps: ",
-    "head_dim must be one of {32,48,64,80,96,112,128,160,192,224,256}, got ", D);
+    "head_dim must be one of {32,48,64,80,96,112,128,160,192,224,256,320,384,448,512}, got ", D);
   TORCH_CHECK(H % kvH == 0,
     "_scaled_dot_product_flash_attention_varlen_for_mps: H must be divisible by kvH, got H=",
     H, " kvH=", kvH);

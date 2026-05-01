@@ -546,7 +546,7 @@ template<typename T, int D>
 {
     constexpr int EPL = (D + 31) / 32;
     constexpr int BQ  = 32;
-    constexpr int BKV = (D <= 64) ? 64 : (D <= 128) ? 32 : 16;
+    constexpr int BKV = (D <= 64) ? 64 : (D <= 128) ? 32 : (D <= 256) ? 16 : 8;
 
     threadgroup float K_smem[BKV * D];
     threadgroup float V_smem[BKV * D];
@@ -722,7 +722,7 @@ template<typename T, int D>
 {
     constexpr int EPL = (D + 31) / 32;
     constexpr int BQ  = 32;
-    constexpr int BKV = (D <= 64) ? 64 : (D <= 128) ? 32 : 16;
+    constexpr int BKV = (D <= 64) ? 64 : (D <= 128) ? 32 : (D <= 256) ? 16 : 8;
 
     threadgroup float K_smem[BKV * D];
     threadgroup float V_smem[BKV * D];
@@ -857,7 +857,7 @@ template<typename T, int D>
 {
     constexpr int EPL  = (D + 31) / 32;
     constexpr int BK   = 32;
-    constexpr int BQS  = (D <= 64) ? 64 : (D <= 128) ? 32 : 16;
+    constexpr int BQS  = (D <= 64) ? 64 : (D <= 128) ? 32 : (D <= 256) ? 16 : 8;
 
     threadgroup float  Q_smem[BQS * D];
     threadgroup float dO_smem[BQS * D];
@@ -1070,6 +1070,10 @@ template<typename T, int D>
   INSTANTIATE_FLASH_VARLEN_FWD(T, 192)  \
   INSTANTIATE_FLASH_VARLEN_FWD(T, 224)  \
   INSTANTIATE_FLASH_VARLEN_FWD(T, 256)  \
+  INSTANTIATE_FLASH_VARLEN_FWD(T, 320)  \
+  INSTANTIATE_FLASH_VARLEN_FWD(T, 384)  \
+  INSTANTIATE_FLASH_VARLEN_FWD(T, 448)  \
+  INSTANTIATE_FLASH_VARLEN_FWD(T, 512)  \
   INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 32)  \
   INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 48)  \
   INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 64)  \
@@ -1081,6 +1085,10 @@ template<typename T, int D>
   INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 192)  \
   INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 224)  \
   INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 256)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 320)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 384)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 448)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_PRE(T, 512)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 32)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 48)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 64)  \
@@ -1092,6 +1100,10 @@ template<typename T, int D>
   INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 192)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 224)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 256)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 320)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 384)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 448)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DQ(T, 512)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 32)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 48)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 64)  \
@@ -1102,7 +1114,11 @@ template<typename T, int D>
   INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 160)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 192)  \
   INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 224)  \
-  INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 256)
+  INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 256)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 320)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 384)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 448)  \
+  INSTANTIATE_FLASH_VARLEN_BWD_DKDV(T, 512)
 
 INSTANTIATE_FLASH_VARLEN_ALL(float)
 INSTANTIATE_FLASH_VARLEN_ALL(half)
